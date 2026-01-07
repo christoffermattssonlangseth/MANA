@@ -1,0 +1,17 @@
+# Ignore data
+data/
+
+# Ignore outputs
+*.h5ad
+*.mtx
+*.csv
+*.rds
+*.hdf5
+*.log
+*.safetensors
+
+
+# Ignore temporary files
+.DS_Store
+.ipynb_checkpoints/
+
