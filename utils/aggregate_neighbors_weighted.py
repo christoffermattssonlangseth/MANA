@@ -356,6 +356,51 @@ def aggregate_neighbors_weighted(
                         agg_features = (weighted_matrix @ sample_features) * row_sums[:, None]
                     else:
                         agg_features = weighted_matrix @ sample_features
+                elif agg == 'median':
+                    # Weighted median (approximate using weighted quantile)
+                    # For each cell, compute weighted median of neighbor features
+                    n_sample_cells = len(indices) if sample_key is not None else n_cells
+                    agg_features = np.zeros((n_sample_cells, n_features))
+
+                    for i in range(n_sample_cells):
+                        # Get neighbors and their weights for this cell
+                        neighbor_indices = weighted_matrix[i].nonzero()[1]
+                        if len(neighbor_indices) == 0:
+                            # No neighbors, use self
+                            agg_features[i] = sample_features[i]
+                        else:
+                            neighbor_weights = weighted_matrix[i, neighbor_indices].toarray().flatten()
+                            neighbor_features = sample_features[neighbor_indices]
+
+                            # Compute weighted median per feature
+                            for j in range(n_features):
+                                feature_vals = neighbor_features[:, j]
+                                sorted_idx = np.argsort(feature_vals)
+                                cumsum = np.cumsum(neighbor_weights[sorted_idx])
+                                median_idx = np.searchsorted(cumsum, cumsum[-1] / 2.0)
+                                agg_features[i, j] = feature_vals[sorted_idx[median_idx]]
+
+                elif agg == 'max':
+                    # Weighted max: take max weighted contribution
+                    # For each feature, find the neighbor that contributes most
+                    n_sample_cells = len(indices) if sample_key is not None else n_cells
+                    agg_features = np.zeros((n_sample_cells, n_features))
+
+                    for i in range(n_sample_cells):
+                        # Get neighbors and their weights
+                        neighbor_indices = weighted_matrix[i].nonzero()[1]
+                        if len(neighbor_indices) == 0:
+                            # No neighbors, use self
+                            agg_features[i] = sample_features[i]
+                        else:
+                            neighbor_weights = weighted_matrix[i, neighbor_indices].toarray().flatten()
+                            neighbor_features = sample_features[neighbor_indices]
+
+                            # Weighted contribution = weight * feature
+                            weighted_contributions = neighbor_weights[:, None] * neighbor_features
+                            # Take max contribution per feature
+                            agg_features[i] = np.max(weighted_contributions, axis=0)
+
                 elif agg in ['var', 'std']:
                     # Weighted variance: sum(w * (x - weighted_mean)^2) / sum(w)
                     weighted_mean = weighted_matrix @ sample_features
@@ -369,12 +414,12 @@ def aggregate_neighbors_weighted(
                     # Fall back to unweighted
                     neighbor_counts = np.array(sample_hop_matrix.sum(axis=1)).flatten()
                     neighbor_counts[neighbor_counts == 0] = 1
-                    
+
                     sum_sq = sample_hop_matrix @ (sample_features ** 2)
                     mean_sq = (sample_hop_matrix @ sample_features) ** 2 / neighbor_counts[:, None] ** 2
                     variance = sum_sq / neighbor_counts[:, None] - mean_sq
                     variance = np.maximum(variance, 0)  # Numerical stability
-                    
+
                     if agg == 'std':
                         agg_features = np.sqrt(variance)
                     else:
