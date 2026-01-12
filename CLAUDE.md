@@ -13,17 +13,19 @@ This creates a continuous, distance-aware spatial context representation that be
 
 ## Implementation
 
-### Core Function
+### Core Functions
+
+#### 1. Weighted Aggregation
 `utils/aggregate_neighbors_weighted.py` implements the weighted aggregation approach.
 
 **Key Features:**
 - Sparse matrix operations for efficiency
 - Multiple distance kernels (exponential, inverse, gaussian, none)
 - Flexible hop decay schemes
-- Multiple aggregation methods (mean, median, sum, max)
+- Multiple aggregation methods (mean, median, sum, max, var, std)
 - Sample-aware processing
 
-### Usage Example
+**Usage Example:**
 
 ```python
 from utils.aggregate_neighbors_weighted import aggregate_neighbors_weighted
@@ -45,6 +47,53 @@ aggregate_neighbors_weighted(
 # Cluster on weighted features
 sc.pp.neighbors(adata, use_rep='X_weighted_agg_mean', n_neighbors=15)
 sc.tl.leiden(adata, resolution=0.5, key_added='leiden_weighted')
+```
+
+#### 2. Spatial Visualization
+`utils/plot_spatial_compact_fast.py` provides fast, compact spatial plotting.
+
+**Key Features:**
+- Multi-panel layout grouped by sample/condition
+- Support for both categorical (clusters) and continuous (gene expression) coloring
+- Automatic metadata display (region, course, etc.)
+- Category highlighting with custom transparency
+- Customizable layouts, colors, and backgrounds
+- Publication-ready output with legends/colorbars
+
+**Usage Example:**
+
+```python
+from plot_spatial_compact_fast import plot_spatial_compact_fast
+
+# Plot clusters across all samples
+plot_spatial_compact_fast(
+    adata,
+    color='leiden_weighted',      # cluster column or gene name
+    groupby='sample_id',           # one panel per sample
+    spot_size=8,
+    cols=3,                        # 3 columns in grid
+    height=8,
+    background='white',
+    dpi=120
+)
+
+# Plot gene expression
+plot_spatial_compact_fast(
+    adata,
+    color='CD8A',                  # gene name
+    groupby='sample_id',
+    cmap_name='viridis',
+    shared_scale=True              # same scale across all panels
+)
+
+# Highlight specific clusters
+plot_spatial_compact_fast(
+    adata,
+    color='leiden_weighted',
+    groupby='sample_id',
+    highlight=['0', '3', '5'],     # highlight clusters 0, 3, 5
+    grey_alpha=0.1                 # fade other clusters
+)
 ```
 
 ## Parameter Optimization Journey
@@ -100,13 +149,28 @@ sc.tl.leiden(adata, resolution=0.5, key_added='leiden_weighted')
 - `n_layers = 3` (from MANA-5 Part 1)
 - `distance_kernel = 'exponential'` (standard)
 
-**Aggregation Methods to Test:**
-- **mean**: Weighted average (standard)
-- **median**: Robust to outliers
-- **sum**: Emphasizes total neighborhood activity
-- **max**: Highlights strongest signals
+**Aggregation Methods Implemented:**
+- **mean**: Weighted average (standard approach, balanced)
+- **median**: Weighted median via cumulative weight distribution (robust to outliers)
+- **sum**: Weighted sum (emphasizes total neighborhood activity)
+- **max**: Maximum weighted contribution (highlights strongest signals)
+- **var/std**: Weighted variance/standard deviation (measures neighborhood heterogeneity)
 
-**Status:** In progress (MANA-5.ipynb Part 2)
+**Implementation Notes:**
+
+*Median Aggregation:*
+- Uses weighted quantile approach
+- Sorts feature values and computes cumulative weight sum
+- Finds 50th percentile using binary search (searchsorted)
+- Preserves robustness to outliers while respecting distance weights
+
+*Max Aggregation:*
+- Computes weighted contribution = weight × feature value
+- Takes maximum across all neighbors per feature
+- Useful for detecting dominant microenvironmental signals
+- Can be sensitive to noise but highlights strongest influences
+
+**Status:** Ready for testing (MANA-5.ipynb Part 2)
 
 ## Evaluation Metrics
 
@@ -182,6 +246,33 @@ While decay=0.5 gives:
 - High local purity = clusters respect tissue spatial organization
 - Both are needed for biologically meaningful segmentation
 
+### Distance Kernel Choice: Exponential vs Gaussian
+
+**Mathematical Difference:**
+- **Exponential**: `weight = exp(-d/scale)` - linear decay in log-space, heavier tail
+- **Gaussian**: `weight = exp(-d²/(2*scale²))` - quadratic decay in log-space, sharper cutoff
+
+**Biological Interpretations:**
+
+*Exponential (Current Choice):*
+- Models diffusion-like processes (metabolites, cytokines, growth factors)
+- Represents gradual microenvironmental influence
+- Better for capturing smooth spatial transitions
+- Appropriate for: tumor microenvironment gradients, inflammation zones, lesion-associated states
+
+*Gaussian:*
+- Models localized, contact-dependent effects
+- Represents sharp boundaries between tissue compartments
+- Better for discrete anatomical structures
+- Appropriate for: organ boundaries, tight cellular niches, well-defined anatomical regions
+
+**Expected Impact on Results:**
+- Gaussian would likely produce more clusters with sharper spatial boundaries
+- Gaussian would increase local purity but might sacrifice transcriptional coherence
+- Exponential better captures the gradual microenvironmental transitions relevant for this project
+
+**Recommendation:** Use exponential kernel as default for microenvironmental analysis. Consider gaussian kernel for datasets with well-defined anatomical compartments.
+
 ## Workflow Recommendations
 
 ### For New Datasets
@@ -231,13 +322,14 @@ aggregate_neighbors_weighted(
 
 ```
 MANA/
-├── README.md                    # Project overview
-├── CLAUDE.md                    # This file - development log
+├── README.md                               # Project overview
+├── CLAUDE.md                               # This file - development log
 ├── utils/
-│   └── aggregate_neighbors_weighted.py  # Core implementation
+│   ├── aggregate_neighbors_weighted.py    # Weighted aggregation implementation
+│   └── plot_spatial_compact_fast.py       # Spatial visualization function
 └── notebooks/
-    ├── MANA-4.ipynb            # Initial parameter testing
-    └── MANA-5.ipynb            # Optimization and aggregation comparison
+    ├── MANA-4.ipynb                       # Initial parameter testing
+    └── MANA-5.ipynb                       # Optimization and aggregation comparison
 ```
 
 ## Notebooks
@@ -250,8 +342,11 @@ MANA/
 - n_layers sweep (2-8)
 - Local purity analysis
 - Biological validation of clusters
+- Development of `plot_spatial_compact_fast` visualization function
 
-**Key Result:** hop_decay=0.2 consistently best
+**Key Results:**
+- hop_decay=0.2 consistently best
+- Custom spatial plotting function created for publication-quality figures
 
 ### MANA-5.ipynb
 **Focus:** Parameter optimization and aggregation method comparison
@@ -265,8 +360,13 @@ MANA/
 - Tests: mean, median, sum, max
 - Uses optimal parameters: hop_decay=0.2, n_layers=3
 - Comprehensive metric evaluation
-- Cluster stability analysis
-- Spatial visualization
+- Cluster stability analysis (ARI, NMI)
+- Spatial visualization using `plot_spatial_compact_fast`
+
+**Key Features:**
+- Module reload mechanism for development
+- Imports visualization function from utils
+- Ready for aggregation method testing
 
 ## Future Directions
 
@@ -329,6 +429,13 @@ MANA/
 
 This is an active research project. Parameter recommendations may be refined as we analyze more datasets.
 
-**Current Status:** Phase 3 in progress (aggregation method comparison)
+**Current Status:** Phase 3 ready for testing (aggregation method comparison)
+
+**Recent Updates (2026-01-12):**
+- Added median and max aggregation methods to `aggregate_neighbors_weighted.py`
+- Created reusable `plot_spatial_compact_fast.py` visualization function
+- Migrated spatial plotting from MANA-4 to utils for reuse across notebooks
+- Updated MANA-5 to import and use utils functions
+- Added distance kernel comparison theory (exponential vs gaussian)
 
 **Last Updated:** 2026-01-12
