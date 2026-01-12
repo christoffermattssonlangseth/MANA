@@ -1,17 +1,44 @@
-# Ignore data
+# Data files
 data/
-
-# Ignore outputs
 *.h5ad
 *.mtx
 *.csv
 *.rds
 *.hdf5
+
+# Outputs and logs
+outputs/
+results/
 *.log
 *.safetensors
 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
 
-# Ignore temporary files
-.DS_Store
+# Jupyter
 .ipynb_checkpoints/
+*.ipynb_checkpoints
 
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
