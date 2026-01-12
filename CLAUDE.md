@@ -329,7 +329,8 @@ MANA/
 │   └── plot_spatial_compact_fast.py       # Spatial visualization function
 └── notebooks/
     ├── MANA-4.ipynb                       # Initial parameter testing
-    └── MANA-5.ipynb                       # Optimization and aggregation comparison
+    ├── MANA-5.ipynb                       # Optimization and aggregation comparison
+    └── MANA-6.ipynb                       # Benchmarking vs CellCharter
 ```
 
 ## Notebooks
@@ -367,6 +368,60 @@ MANA/
 - Module reload mechanism for development
 - Imports visualization function from utils
 - Ready for aggregation method testing
+
+### MANA-6.ipynb
+**Focus:** Head-to-head benchmarking against CellCharter
+
+**Comparison Methods:**
+- **CellCharter**: Uniform weights, no distance weighting (hop_decay=1.0, kernel='none')
+- **MANA (exponential)**: Distance-weighted with exponential kernel (hop_decay=0.2)
+- **MANA (gaussian)**: Distance-weighted with gaussian kernel (hop_decay=0.2)
+
+**Analysis Components:**
+
+1. **Quantitative Metrics**
+   - Local purity (spatial coherence)
+   - Gradient smoothness (ability to capture transitions)
+   - Silhouette score (expression coherence)
+   - Davies-Bouldin score (cluster separation)
+
+2. **Statistical Testing**
+   - Per-cell purity distributions
+   - Wilcoxon signed-rank tests
+   - Distribution visualizations (box plots, violin plots)
+
+3. **Cluster Stability**
+   - Bootstrap subsampling (10 iterations, 80% samples)
+   - ARI scores across iterations
+   - Robustness assessment
+
+4. **Biological Validation**
+   - Marker gene alignment scores
+   - Cell type marker coherence within clusters
+   - Customizable marker gene dictionary
+
+5. **Visual Comparison**
+   - Side-by-side spatial plots
+   - Marker gene expression overlay
+   - Multi-sample visualization
+
+6. **Comprehensive Summary**
+   - Composite scoring across all metrics
+   - Method ranking
+   - Use case recommendations
+
+**Key Metrics:**
+- `local_purity`: Fraction of neighbors with same cluster label (higher = better)
+- `gradient_smoothness`: Average label change across edges (lower = smoother)
+- `marker_alignment`: Silhouette on marker genes (higher = better)
+- `stability_ari`: Bootstrap consistency (higher = more stable)
+
+**Expected Outcomes:**
+- MANA should show better gradient smoothness (captures smooth transitions)
+- MANA may show improved local purity in heterogeneous regions
+- CellCharter may be faster and simpler for discrete compartments
+- Gaussian kernel may show highest purity with sharp boundaries
+- Exponential kernel may balance gradient capture with coherence
 
 ## Future Directions
 
@@ -429,13 +484,24 @@ MANA/
 
 This is an active research project. Parameter recommendations may be refined as we analyze more datasets.
 
-**Current Status:** Phase 3 ready for testing (aggregation method comparison)
+**Current Status:** Benchmarking phase - ready for head-to-head comparison with CellCharter
 
 **Recent Updates (2026-01-12):**
+
+*Phase 1 - Parameter Optimization:*
 - Added median and max aggregation methods to `aggregate_neighbors_weighted.py`
 - Created reusable `plot_spatial_compact_fast.py` visualization function
 - Migrated spatial plotting from MANA-4 to utils for reuse across notebooks
 - Updated MANA-5 to import and use utils functions
 - Added distance kernel comparison theory (exponential vs gaussian)
+
+*Phase 2 - Benchmarking Framework:*
+- Created MANA-6.ipynb for comprehensive CellCharter comparison
+- Implemented gradient smoothness metric for capturing spatial transitions
+- Added marker gene alignment scoring for biological validation
+- Built bootstrap stability analysis for cluster robustness testing
+- Developed composite scoring system across multiple metrics
+- Included statistical significance testing (Wilcoxon signed-rank)
+- Added use case recommendations for method selection
 
 **Last Updated:** 2026-01-12

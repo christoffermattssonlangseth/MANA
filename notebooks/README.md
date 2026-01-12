@@ -25,6 +25,30 @@ Compares different statistical aggregation methods (mean, median, sum, max) usin
 - Sum: Emphasizes total neighborhood activity
 - Max: Highlights strongest signals
 
+### [MANA-6.ipynb](MANA-6.ipynb)
+**Benchmarking Against CellCharter**
+
+Comprehensive head-to-head comparison between MANA and base CellCharter method.
+
+**Comparison Focus:**
+- Quantitative metrics (spatial coherence, expression coherence, cluster separation)
+- Statistical significance testing (Wilcoxon, distribution analysis)
+- Cluster stability via bootstrap subsampling
+- Biological validation with marker gene alignment
+- Visual side-by-side comparison
+- Gradient smoothness analysis
+
+**Methods Compared:**
+- CellCharter (uniform weights, no distance weighting)
+- MANA with exponential kernel (hop_decay=0.2)
+- MANA with gaussian kernel (hop_decay=0.2)
+
+**Key Metrics:**
+- `local_purity`: Spatial coherence
+- `gradient_smoothness`: Ability to capture smooth transitions
+- `marker_alignment`: Biological validation
+- `stability_ari`: Robustness across subsampling
+
 ## Usage
 
 All notebooks import utility functions from the `utils` directory:
