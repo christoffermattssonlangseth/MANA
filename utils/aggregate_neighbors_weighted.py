@@ -5,7 +5,6 @@ This module extends CellCharter's aggregate_neighbors function to support:
 1. Hop-level decay: First hop contributes more than second, second more than third, etc.
 2. Within-hop distance weighting: Closer cells within each hop contribute more.
 
-Author: Christoffer (with Claude)
 """
 
 import numpy as np
