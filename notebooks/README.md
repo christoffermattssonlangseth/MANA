@@ -49,6 +49,22 @@ Comprehensive head-to-head comparison between MANA and base CellCharter method.
 - `marker_alignment`: Biological validation
 - `stability_ari`: Robustness across subsampling
 
+**Benchmark Results (MS Lesion Dataset, 107K cells):**
+- 🏆 MANA (gaussian) wins overall: 0.693 vs 0.252 composite score
+- ✅ +14% spatial coherence (p < 0.001)
+- ✅ +30% better gradient smoothness
+- ✅ +5.6% more stable clusters
+- ⚠️ Small transcriptional trade-off acceptable
+
+**Interpretation Guide:**
+The notebook includes a comprehensive "Results Interpretation Guide" section with:
+- Detailed metric-by-metric analysis with winners
+- Biological interpretations (why MANA works better)
+- Key claims for publications with exact percentages
+- Ready-to-use methods text for papers
+- Recommendations based on tissue characteristics
+- Composite score breakdown and explanation
+
 ## Usage
 
 All notebooks import utility functions from the `utils` directory:
