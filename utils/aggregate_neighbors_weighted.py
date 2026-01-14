@@ -8,7 +8,7 @@ This module extends CellCharter's aggregate_neighbors function to support:
 """
 
 import numpy as np
-from scipy.sparse import csr_matrix, issparse, diags
+from scipy.sparse import csr_matrix, issparse, diags, eye as sparse_eye
 from scipy.spatial.distance import cdist
 from anndata import AnnData
 from typing import Union, Literal, Optional, List
@@ -21,28 +21,28 @@ def compute_hop_matrices(
 ) -> List[csr_matrix]:
     """
     Compute sparse matrices indicating neighbors at exactly each hop distance.
-    
+
     Parameters
     ----------
     connectivity : csr_matrix
         Binary connectivity matrix (1 = neighbors, 0 = not neighbors)
     n_layers : int
         Number of hops to compute
-        
+
     Returns
     -------
     List of sparse matrices, one per hop (index 0 = hop 1, index 1 = hop 2, etc.)
     Each matrix has 1s for cells at exactly that hop distance.
     """
     n_cells = connectivity.shape[0]
-    
+
     # Track which cells have been "reached" at previous hops
-    # Start with self (hop 0)
-    reached = csr_matrix(np.eye(n_cells))
-    
+    # Start with self (hop 0) - USE SPARSE IDENTITY!
+    reached = sparse_eye(n_cells, format='csr')
+
     hop_matrices = []
     current_neighbors = connectivity.copy()
-    
+
     for hop in range(1, n_layers + 1):
         if hop == 1:
             # First hop is just direct neighbors
@@ -57,13 +57,13 @@ def compute_hop_matrices(
             # Remove negative values (cells already reached)
             hop_matrix.data = np.maximum(hop_matrix.data, 0)
             hop_matrix.eliminate_zeros()
-        
+
         hop_matrices.append(hop_matrix.copy())
-        
+
         # Update reached to include this hop
         reached = reached + hop_matrix
         reached.data = np.minimum(reached.data, 1)  # Binarize
-    
+
     return hop_matrices
 
 
@@ -151,6 +151,7 @@ def aggregate_neighbors_weighted(
     spatial_key: str = 'spatial',
     normalize_weights: bool = True,
     include_self: bool = True,
+    chunk_size: Optional[int] = None,  # NEW: for memory-efficient processing
 ) -> Optional[AnnData]:
     """
     Aggregate neighbor features with hop-level decay and distance-based weighting.
@@ -284,46 +285,61 @@ def aggregate_neighbors_weighted(
     # Parse aggregations
     if isinstance(aggregations, str):
         aggregations = [aggregations]
-    
-    # Compute hop matrices (which cells are at exactly hop h)
-    hop_matrices = compute_hop_matrices(connectivity_binary, n_layers)
-    
-    # Handle sample-wise processing
+
+    # Handle sample-wise processing FIRST for memory efficiency
+    # This way we compute hop matrices per-sample instead of globally
     if sample_key is not None and sample_key in adata.obs:
         samples = adata.obs[sample_key].unique()
         sample_indices = {s: np.where(adata.obs[sample_key] == s)[0] for s in samples}
+        process_by_sample = True
+        print(f"Processing {len(samples)} samples separately for memory efficiency...")
     else:
         sample_indices = {'all': np.arange(n_cells)}
+        process_by_sample = False
+
+    # For large datasets, compute hop matrices per-sample to save memory
+    if process_by_sample:
+        hop_matrices = None  # Will compute per-sample
+    else:
+        # Compute hop matrices globally (original behavior)
+        hop_matrices = compute_hop_matrices(connectivity_binary, n_layers)
     
     # Collect aggregated features
     all_aggregated = []
-    
+
     # Include self features (hop 0)
     if include_self:
         all_aggregated.append(features)
-    
-    # Process each hop
-    for hop_idx, (hop_matrix, hop_weight) in enumerate(zip(hop_matrices, hop_weights)):
-        hop = hop_idx + 1
-        
-        # Initialize aggregated features for this hop
-        hop_aggregated = {agg: np.zeros((n_cells, n_features)) for agg in aggregations}
-        
-        # Process each sample separately if sample_key provided
-        for sample_name, indices in sample_indices.items():
-            if len(indices) == 0:
-                continue
-            
-            # Get submatrices for this sample
-            if sample_key is not None:
-                sample_hop_matrix = hop_matrix[np.ix_(indices, indices)]
-                sample_coords = coords[indices]
-                sample_features = features[indices]
-            else:
-                sample_hop_matrix = hop_matrix
-                sample_coords = coords
-                sample_features = features
-            
+
+    # Initialize storage for each hop's aggregated features
+    hop_aggregated_all = [{agg: np.zeros((n_cells, n_features)) for agg in aggregations}
+                          for _ in range(n_layers)]
+
+    # Process each sample
+    for sample_idx, (sample_name, indices) in enumerate(sample_indices.items()):
+        if len(indices) == 0:
+            continue
+
+        if process_by_sample:
+            print(f"  Processing sample {sample_idx + 1}/{len(sample_indices)}: {sample_name} ({len(indices):,} cells)")
+
+        # Get sample-specific data
+        sample_coords = coords[indices]
+        sample_features = features[indices]
+
+        # Get sample-specific connectivity and compute hop matrices
+        if process_by_sample:
+            # Extract subgraph for this sample
+            sample_connectivity = connectivity_binary[np.ix_(indices, indices)]
+            sample_hop_matrices = compute_hop_matrices(sample_connectivity, n_layers)
+        else:
+            # Use global hop matrices, extract sample portion
+            sample_hop_matrices = [hm[np.ix_(indices, indices)] for hm in hop_matrices]
+
+        # Process each hop for this sample
+        for hop_idx, hop_weight in enumerate(hop_weights):
+            sample_hop_matrix = sample_hop_matrices[hop_idx]
+
             # Compute distance weights for this hop
             weighted_matrix = compute_distance_weights(
                 sample_coords,
@@ -331,17 +347,17 @@ def aggregate_neighbors_weighted(
                 kernel=distance_kernel,
                 scale=distance_scale,
             )
-            
+
             # Apply hop-level decay
             weighted_matrix = weighted_matrix * hop_weight
-            
+
             # Normalize weights if requested
             if normalize_weights:
                 row_sums = np.array(weighted_matrix.sum(axis=1)).flatten()
                 row_sums[row_sums == 0] = 1  # Prevent division by zero
                 normalizer = diags(1.0 / row_sums)
                 weighted_matrix = normalizer @ weighted_matrix
-            
+
             # Compute aggregations
             for agg in aggregations:
                 if agg == 'mean':
@@ -351,9 +367,9 @@ def aggregate_neighbors_weighted(
                     # Weighted sum (don't normalize)
                     if normalize_weights:
                         # Undo normalization for sum
-                        row_sums = np.array(hop_matrix[np.ix_(indices, indices)].sum(axis=1)).flatten()
-                        row_sums[row_sums == 0] = 1
-                        agg_features = (weighted_matrix @ sample_features) * row_sums[:, None]
+                        row_sums_orig = np.array(sample_hop_matrix.sum(axis=1)).flatten()
+                        row_sums_orig[row_sums_orig == 0] = 1
+                        agg_features = (weighted_matrix @ sample_features) * row_sums_orig[:, None]
                     else:
                         agg_features = weighted_matrix @ sample_features
                 elif agg == 'median':
@@ -426,18 +442,15 @@ def aggregate_neighbors_weighted(
                         agg_features = variance
                 else:
                     raise ValueError(f"Unknown aggregation: {agg}")
-                
-                # Store results
-                if sample_key is not None:
-                    hop_aggregated[agg][indices] = agg_features
-                else:
-                    hop_aggregated[agg] = agg_features
-        
-        # Concatenate aggregations for this hop
-        for agg in aggregations:
-            all_aggregated.append(hop_aggregated[agg])
-    
+
+                # Store results in the hop_aggregated_all structure
+                hop_aggregated_all[hop_idx][agg][indices] = agg_features
+
     # Concatenate all hops
+    for hop_idx in range(n_layers):
+        for agg in aggregations:
+            all_aggregated.append(hop_aggregated_all[hop_idx][agg])
+
     output = np.hstack(all_aggregated)
     
     # Store in adata
