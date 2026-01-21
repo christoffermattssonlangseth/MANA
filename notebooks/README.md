@@ -65,6 +65,31 @@ The notebook includes a comprehensive "Results Interpretation Guide" section wit
 - Recommendations based on tissue characteristics
 - Composite score breakdown and explanation
 
+### [MANA-7.ipynb](MANA-7.ipynb)
+**Full-Scale MANA Run (Production Parameters)**
+
+Runs MANA with the benchmarked best parameters on the full dataset, then clusters and visualizes results.
+
+**Highlights:**
+- Gaussian kernel, hop_decay=0.2, n_layers=3
+- scVI latent space aggregation
+- Memory-efficient per-sample processing
+
+### [MANA-8.ipynb](MANA-8.ipynb)
+**Refined Clustering and Diagnostics**
+
+Downstream clustering refinements and spatial visualization checks to improve compartment separation.
+
+### [MANA-9.ipynb](MANA-9.ipynb)
+**Extended MANA Run (2-hop)**
+
+Shorter neighborhood depth variant with MANA feature construction and downstream neighborhood graph setup.
+
+### [MANA-10.ipynb](MANA-10.ipynb)
+**Tissue Area per Sample (Alpha Shape)**
+
+Computes concave (alpha-shape) tissue area per `sample_id` from spatial coordinates, with summary plots.
+
 ## Usage
 
 All notebooks import utility functions from the `utils` directory:
