@@ -61,7 +61,7 @@ def plot_spatial_compact_fast(
     rasterized : bool
         Whether to rasterize scatter plots (recommended for large datasets)
     invert_y : bool
-        Whether to invert y-axis (common for imaging coordinates)
+        Whether to flip y values (multiply by -1) for imaging coordinates
     dpi : int
         Figure DPI
     highlight : str, list, optional
@@ -324,8 +324,9 @@ def plot_spatial_compact_fast(
         idx = group_indices[i]
         if idx.size:
             xy = coords[idx]
+            y = -xy[:, 1] if invert_y else xy[:, 1]
             ax.scatter(
-                xy[:, 0], -xy[:, 1],
+                xy[:, 0], y,
                 c=colors_arr[idx],
                 s=spot_size,
                 marker='o',
@@ -366,8 +367,6 @@ def plot_spatial_compact_fast(
 
         ax.set_title(title, fontsize=5, pad=2, color=text_color)
         ax.set_aspect("equal")
-        if invert_y:
-            ax.invert_yaxis()
         ax.set_axis_off()
 
     # blank unused panels
