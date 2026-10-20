@@ -32,6 +32,14 @@ This creates a continuous, distance-aware spatial context representation that be
 - **Weakness of fixed spacing:** smoothly varying density (ARI 0.65→0.60). Clusters partly follow density (NMI with density bins 0.10 vs 0.02 for CellCharter). Per-cell spacing from noisy Delaunay edges blurred boundaries; hybrid hops+shells doubles dims and hurts GMM.
 - **Fix: `adaptive`** — spacing_i = spacing^(1-a) * local^a, local = smoothed mean 15-NN distance. Synthetic mean ARI: a=0 0.630, a=0.5 0.649, a=1 0.644; smoothly varying density 0.60→0.74 (a=0.5). EAE 30 µm R²: a=0 0.427, a=0.5 0.417, a=1 0.395 (full adaptation discards informative density, e.g. sparse white matter; fixed-radius targets also favour a=0). Default a=0.5.
 
+**EAE clustering check** (G3_L1_1, S2_T1_0 control, S2_T1_1, S4_T2_2, S3_B1_0; 63K cells; marker modules from 5101-gene panel):
+- K=10: marker eta² equal (0.170 CC / 0.168 shells per cell); same compartments; 17% of cells assigned differently. Marker-based adjudication of disagreeing groups was split (60% of cells favour shells, per-cell 48%).
+- 10-seed dorsal-horn recovery: shells 97-99% in 4 samples (CC 91-97%), but shells missed S4_T2_2's dorsal horn in 6/10 seeds (CC 1/10), putting the whole section in its own cluster.
+- K=20/30 (5 seeds): CC explains more marker variance (K=30 0.244 vs 0.225, p=0.008); shells slightly more stable (0.72 vs 0.70). 13-15 of 30 clusters are >90% one sample in both.
+- `cc.tl.Cluster` is not reproducible even at a fixed random_state on CPU, so method comparisons need several seeds (this also undermines the single-run MANA-6 benchmark).
+
+**S4-T data quality:** S4_T1_1, S4_T1_2, S4_T2_0, S4_T2_2, S4_T3_0 have median 374-685 counts/cell (dataset median 1547) and are the most offset samples in X_scVI (S4_T2_2 rank 1/107; mean rank 12 vs 56). `_scvi_batch` is already per-section (107 batches), so this is lost signal, not missing batch correction. S4_T2_2 is Xenium run 0054723. Neighborhood smoothing makes constant per-section offsets more prominent, so these sections can claim their own clusters.
+
 **Recommended defaults now:** `aggregate_neighbors_shells(adata, n_shells=3, use_rep='X_scVI', sample_key='sample_id')` (adaptive=0.5) then `cc.tl.Cluster`.
 
 ## Implementation

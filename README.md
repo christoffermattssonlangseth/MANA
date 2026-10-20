@@ -132,6 +132,10 @@ The default (adaptive=0.5) beats CellCharter in all six layouts (wins 7-9/10 see
 
 Shells reduce error most in white matter (12-17%), the sparsest/most irregular cells and EAE vs control tissue (7-9% vs ~0%). The fixed-radius targets favour adaptive=0 by construction.
 
+**EAE clustering** (5 samples, 63K cells, `cc.tl.Cluster`, multiple seeds): at K=10 both methods find the same compartments and explain the same marker-module variance (0.17 per cell). At K=20/30 CellCharter explains slightly more (K=30: 0.244 vs 0.225, all 5 seeds) while MANA shells is slightly more seed-stable (ARI 0.72 vs 0.70). So MANA's better neighborhood encoding does not translate into better clusters on this tissue; its advantage is in irregular geometry and in using the features directly. Single clustering runs are not reproducible enough to compare methods: always use several seeds.
+
+**Data note:** the S4-T sections (S4_T1_1, S4_T1_2, S4_T2_0, S4_T2_2, S4_T3_0) have 2-4x lower counts per cell (median 374-685 vs 1547) and are the most offset samples in the scVI embedding, despite per-section batch correction. They can claim their own clusters with either method; consider fitting clusters without them and predicting them afterwards.
+
 **Known limitation:** with adaptive=0, where density varies smoothly and independently of domains, shells partly cluster by density; adaptive>0 fixes this at a small cost in physical-distance fidelity.
 
 **Superseded results:** the earlier MANA-4/MANA-6 conclusions (`hop_decay=0.2` best; composite score 0.693 vs 0.252) do not hold. `hop_decay` had no effect before the 2026-10-20 fix, and local purity / gradient smoothness reward spatial smoothing by construction. `compartment_anno` is a relabelled CellCharter (k=10) clustering and cannot serve as ground truth for MANA vs CellCharter.
@@ -158,4 +162,4 @@ If you use MANA in your research, please cite:
 
 ## Status
 
-**In development.** Distance shells beat CellCharter on geometrically irregular tissue (synthetic ground truth and EAE composition encoding). Open item: a real-data clustering comparison against marker genes.
+**In development.** Distance shells beat CellCharter on geometrically irregular tissue (synthetic ground truth and EAE composition encoding). On EAE domain clustering the two methods are roughly equivalent (CellCharter slightly ahead at high K). Next: a public dataset with expert domain annotations.
