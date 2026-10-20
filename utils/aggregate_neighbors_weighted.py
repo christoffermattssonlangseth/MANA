@@ -462,8 +462,11 @@ def aggregate_neighbors_weighted(
         for agg in aggregations:
             all_aggregated.append(hop_aggregated_all[hop_idx][agg])
 
+    # keep a float input's dtype (cc.tl.Cluster rejects float64 by default)
     output = np.hstack(all_aggregated)
-    
+    if np.issubdtype(features.dtype, np.floating):
+        output = output.astype(features.dtype, copy=False)
+
     # Store in adata
     adata.obsm[out_key] = output
     
@@ -572,6 +575,8 @@ def aggregate_neighbors_shells(
 
     distances = adata.obsp['spatial_distances'] if 'spatial_distances' in adata.obsp else None
 
+    if not np.issubdtype(features.dtype, np.floating):
+        features = features.astype(np.float32)
     shells = np.zeros((n_cells, n_shells * n_features), dtype=features.dtype)
     spacings = {}
     for sample_name, indices in sample_indices.items():
