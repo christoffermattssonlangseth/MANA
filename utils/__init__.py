@@ -5,11 +5,12 @@ This package provides tools for distance-weighted neighborhood aggregation
 and spatial visualization of spatial transcriptomics data.
 """
 
-from .aggregate_neighbors_weighted import aggregate_neighbors_weighted
+from .aggregate_neighbors_weighted import aggregate_neighbors_weighted, aggregate_neighbors_shells
 from .plot_spatial_compact_fast import plot_spatial_compact_fast
 
 __all__ = [
     'aggregate_neighbors_weighted',
+    'aggregate_neighbors_shells',
     'plot_spatial_compact_fast',
 ]
 

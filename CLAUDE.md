@@ -11,6 +11,29 @@ This document tracks the development and optimization of the MANA (Metric-Aware 
 
 This creates a continuous, distance-aware spatial context representation that better captures spatial gradients and microenvironmental transitions in spatial transcriptomics data.
 
+## 2026-10-20 Re-evaluation (supersedes Phases 1-3 conclusions below)
+
+**Bug:** `hop_decay` was multiplied into the weights *before* row normalization, so it cancelled exactly whenever `normalize_weights=True` (outputs for decay 0.2/0.5/1.0 identical to 1e-16). All MANA-4…MANA-9 results therefore compared only the within-hop distance kernel against CellCharter; "hop_decay=0.2 best" was clustering noise. With `distance_kernel='none'` the function reproduces `cc.gr.aggregate_neighbors` exactly. Fixed: decay now scales each hop's output block; default changed to 1.0. Notebooks that pass `hop_decay=0.2` will now produce different features if re-run.
+
+**Why hop decay is not the lever:** CellCharter concatenates hop rings as separate blocks, so the clusterer learns per-ring importance. A full-covariance GMM (`cc.tl.Cluster`, default) absorbs any fixed block scaling. Decay only matters for scale-sensitive clustering (Leiden on kNN, k-means). The information CellCharter actually discards is *within-ring geometry*.
+
+**Evaluation problems found:**
+- `compartment_anno` is a relabelled `cluster_cellcharter_10` (cluster purity 1.000), so it cannot be ground truth for MANA vs CellCharter.
+- Local purity / gradient smoothness reward spatial smoothing by construction; the MANA-6 composite score is not evidence of superiority.
+
+**New benchmarks** (scripts were run from a scratch directory; to be moved into the repo if kept):
+1. Synthetic tissues with known domains, 7 layouts × 10 seeds, GMM with true K, ARI overall and near boundaries.
+2. EAE (877K cells, 107 samples, `..._scVI_embedding_for_mana.h5ad`): ridge regression (sample-grouped CV) from neighbor blocks to anno_L2 composition within 30/60 µm, plus a 1-3 hop composition control.
+
+**Results:**
+- Within-hop gaussian weighting (current MANA) helps at holes/tears (boundary ARI 0.36→0.49) and density contrasts (0.30→0.39), is neutral on uniform tissue, and loses on thin layers.
+- Variants tested: uniform/kernel blend, per-cell adaptive scale, geodesic distance per hop, pooled multi-scale (geodesic and physical), physical shells, density-adaptive shells, hybrid hops+shells.
+- **Winner: physical distance shells** (`aggregate_neighbors_shells`): Gaussian rings at k × median edge length (width 0.5), kept as separate blocks. Synthetic ARI: holes 0.53→0.72, thin layers 0.54→0.61, uniform 0.57→0.65, density contrast 0.63→0.69. EAE 30 µm composition R² 0.376→0.427 (90/107 samples), biggest in white matter (17%), sparse/irregular cells, EAE vs control.
+- **Weakness of fixed spacing:** smoothly varying density (ARI 0.65→0.60). Clusters partly follow density (NMI with density bins 0.10 vs 0.02 for CellCharter). Per-cell spacing from noisy Delaunay edges blurred boundaries; hybrid hops+shells doubles dims and hurts GMM.
+- **Fix: `adaptive`** — spacing_i = spacing^(1-a) * local^a, local = smoothed mean 15-NN distance. Synthetic mean ARI: a=0 0.630, a=0.5 0.649, a=1 0.644; smoothly varying density 0.60→0.74 (a=0.5). EAE 30 µm R²: a=0 0.427, a=0.5 0.417, a=1 0.395 (full adaptation discards informative density, e.g. sparse white matter; fixed-radius targets also favour a=0). Default a=0.5.
+
+**Recommended defaults now:** `aggregate_neighbors_shells(adata, n_shells=3, use_rep='X_scVI', sample_key='sample_id')` (adaptive=0.5) then `cc.tl.Cluster`.
+
 ## Implementation
 
 ### Core Functions
@@ -96,7 +119,7 @@ plot_spatial_compact_fast(
 )
 ```
 
-## Parameter Optimization Journey
+## Parameter Optimization Journey (historical; hop_decay had no effect in these runs)
 
 ### Phase 1: Initial Testing (MANA-4)
 
@@ -304,17 +327,14 @@ While decay=0.5 gives:
    - Spatial coherence of clusters
    - Alignment with known anatomy
 
-### Quick Start (Recommended Defaults)
+### Quick Start (Recommended Defaults, updated 2026-10-20)
 
 ```python
-# Recommended starting parameters
-aggregate_neighbors_weighted(
+aggregate_neighbors_shells(
     adata,
-    n_layers=3,
-    aggregations='mean',
+    n_shells=3,
     use_rep='X_scVI',
-    hop_decay=0.2,
-    distance_kernel='exponential',
+    sample_key='sample_id',
 )
 ```
 
@@ -497,7 +517,7 @@ MANA/
 
 This is an active research project. Parameter recommendations may be refined as we analyze more datasets.
 
-**Current Status:** Benchmarking complete - MANA validated with quantitative superiority over CellCharter
+**Current Status (2026-10-20):** Re-evaluated, see "2026-10-20 Re-evaluation" at the top. Distance shells are the recommended method; the benchmark claims below are superseded.
 
 **Recent Updates (2026-01-12):**
 

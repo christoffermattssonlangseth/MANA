@@ -5,10 +5,14 @@ This module extends CellCharter's aggregate_neighbors function to support:
 1. Hop-level decay: First hop contributes more than second, second more than third, etc.
 2. Within-hop distance weighting: Closer cells within each hop contribute more.
 
+It also provides `aggregate_neighbors_shells`, which replaces graph-hop rings with
+soft rings of physical distance (benchmarked as the strongest MANA variant).
+
 """
 
 import numpy as np
 from scipy.sparse import csr_matrix, issparse, diags, eye as sparse_eye
+from scipy.spatial import cKDTree
 from scipy.spatial.distance import cdist
 from anndata import AnnData
 from typing import Union, Literal, Optional, List
@@ -145,7 +149,7 @@ def aggregate_neighbors_weighted(
     out_key: str = 'X_cellcharter_weighted',
     copy: bool = False,
     # New parameters for weighting
-    hop_decay: Union[float, Literal['learn'], List[float]] = 0.5,
+    hop_decay: Union[float, List[float]] = 1.0,
     distance_kernel: Literal['exponential', 'inverse', 'gaussian', 'none'] = 'exponential',
     distance_scale: Optional[float] = None,
     spatial_key: str = 'spatial',
@@ -184,9 +188,15 @@ def aggregate_neighbors_weighted(
         Return a copy instead of modifying in place
         
     hop_decay : float or list
-        Decay factor for hop weighting:
-        - float: weight for hop h = hop_decay^h (e.g., 0.5 -> 0.5, 0.25, 0.125)
+        Scale factor for each hop's output block (the self block is unscaled):
+        - float: block for hop h is multiplied by hop_decay^h (e.g., 0.5 -> 0.5, 0.25, 0.125)
         - list: explicit weights for each hop [w1, w2, w3, ...]
+        Default 1.0 (no scaling, as in CellCharter). Because hops are concatenated as
+        separate blocks rather than pooled, this only rescales features: it matters for
+        scale-sensitive clustering (Leiden/kNN, k-means) but is largely absorbed by a
+        full-covariance GMM (cc.tl.Cluster).
+        Note: before 2026-10-20 the decay was applied before row normalization and
+        therefore had no effect when normalize_weights=True.
     distance_kernel : str
         Kernel for distance weighting within hops:
         - 'exponential': exp(-d / scale) [recommended]
@@ -222,11 +232,10 @@ def aggregate_neighbors_weighted(
     >>> 
     >>> # Weighted aggregation (this function)
     >>> aggregate_neighbors_weighted(
-    ...     adata, 
-    ...     n_layers=3, 
+    ...     adata,
+    ...     n_layers=3,
     ...     use_rep='X_scVI',
-    ...     hop_decay=0.5,  # Each hop contributes half as much
-    ...     distance_kernel='exponential',
+    ...     distance_kernel='gaussian',
     ... )
     """
     adata = adata.copy() if copy else adata
@@ -348,10 +357,9 @@ def aggregate_neighbors_weighted(
                 scale=distance_scale,
             )
 
-            # Apply hop-level decay
-            weighted_matrix = weighted_matrix * hop_weight
-
-            # Normalize weights if requested
+            # Normalize weights if requested.
+            # Hop decay is applied to the output block below, AFTER normalization:
+            # scaling the weights before row-normalizing cancels it out exactly.
             if normalize_weights:
                 row_sums = np.array(weighted_matrix.sum(axis=1)).flatten()
                 row_sums[row_sums == 0] = 1  # Prevent division by zero
@@ -443,6 +451,9 @@ def aggregate_neighbors_weighted(
                 else:
                     raise ValueError(f"Unknown aggregation: {agg}")
 
+                # Apply hop-level decay by scaling this hop's block
+                agg_features = agg_features * hop_weight
+
                 # Store results in the hop_aggregated_all structure
                 hop_aggregated_all[hop_idx][agg][indices] = agg_features
 
@@ -472,12 +483,159 @@ def aggregate_neighbors_weighted(
     return None
 
 
+def aggregate_neighbors_shells(
+    adata: AnnData,
+    n_shells: int = 3,
+    use_rep: Optional[str] = None,
+    sample_key: Optional[str] = None,
+    out_key: str = 'X_mana_shells',
+    spatial_key: str = 'spatial',
+    spacing: Optional[float] = None,
+    width: float = 0.5,
+    adaptive: float = 0.5,
+    n_density_neighbors: int = 15,
+    include_self: bool = True,
+    copy: bool = False,
+) -> Optional[AnnData]:
+    """
+    Aggregate neighbor features in soft rings of physical distance.
+
+    Like CellCharter, the output is [self | shell 1 | ... | shell n] with each shell kept
+    as a separate block. Instead of graph-hop rings, shell k is a Gaussian ring centred at
+    k * spacing: weight = exp(-(d - k*spacing)^2 / (2 * (width*spacing)^2)), row-normalized.
+    This makes the representation robust to irregular tissue geometry (holes, tears,
+    density changes), where one graph hop can span very different physical distances.
+
+    Parameters
+    ----------
+    adata : AnnData
+        Annotated data object
+    n_shells : int
+        Number of distance shells (analogous to n_layers)
+    use_rep : str, optional
+        Key in adata.obsm for features. If None, uses adata.X
+    sample_key : str, optional
+        Key in adata.obs; shells are computed within each sample
+    out_key : str
+        Key to store output in adata.obsm
+    spatial_key : str
+        Key in adata.obsm for spatial coordinates
+    spacing : float, optional
+        Shell spacing in coordinate units. If None, the median Delaunay edge length of
+        each sample (from 'spatial_distances' if present, else the median distance to the
+        6 nearest neighbours).
+    width : float
+        Ring half-width as a fraction of spacing
+    adaptive : float
+        Density adaptation in [0, 1]. Each cell's spacing is
+        spacing^(1 - adaptive) * local_spacing^adaptive, where local_spacing is the mean
+        distance to its `n_density_neighbors` nearest cells (smoothed over those
+        neighbours, rescaled to the sample median). 0 = one fixed spacing per sample.
+        Without adaptation, clusters can partly follow cell density in tissue whose
+        density varies independently of domains; full adaptation discards density
+        differences that are informative (e.g. sparse white matter). 0.5 balances both.
+    n_density_neighbors : int
+        Neighbours used for the local spacing estimate
+    include_self : bool
+        If True, include the cell's own features as the first block
+
+    Returns
+    -------
+    If copy=True, returns modified AnnData. Otherwise modifies in place.
+
+    Examples
+    --------
+    >>> sq.gr.spatial_neighbors(adata, library_key='sample_id', coord_type='generic', delaunay=True)
+    >>> cc.gr.remove_long_links(adata)
+    >>> aggregate_neighbors_shells(adata, n_shells=3, use_rep='X_scVI', sample_key='sample_id')
+    >>> cc.tl.Cluster(n_clusters=10).fit(adata, use_rep='X_mana_shells')
+    """
+    adata = adata.copy() if copy else adata
+
+    if use_rep is None:
+        features = adata.X.toarray() if issparse(adata.X) else adata.X
+    else:
+        if use_rep not in adata.obsm:
+            raise KeyError(f"Representation '{use_rep}' not found in adata.obsm")
+        features = adata.obsm[use_rep]
+    features = np.asarray(features)
+    n_cells, n_features = features.shape
+
+    if spatial_key not in adata.obsm:
+        raise KeyError(f"Spatial coordinates '{spatial_key}' not found in adata.obsm.")
+    coords = np.asarray(adata.obsm[spatial_key])
+
+    if sample_key is not None and sample_key in adata.obs:
+        sample_indices = adata.obs.groupby(sample_key, observed=True).indices
+    else:
+        sample_indices = {'all': np.arange(n_cells)}
+
+    distances = adata.obsp['spatial_distances'] if 'spatial_distances' in adata.obsp else None
+
+    shells = np.zeros((n_cells, n_shells * n_features), dtype=features.dtype)
+    spacings = {}
+    for sample_name, indices in sample_indices.items():
+        sample_coords = coords[indices]
+        tree = cKDTree(sample_coords)
+
+        s = spacing
+        if s is None:
+            if distances is not None:
+                d = distances[np.ix_(indices, indices)].data
+                s = float(np.median(d)) if len(d) else None
+            if s is None:
+                d, _ = tree.query(sample_coords, k=min(7, len(indices)))
+                s = float(np.median(d[:, 1:]))
+        spacings[str(sample_name)] = s
+
+        # per-cell spacing (constant when adaptive=0)
+        cell_s = np.full(len(indices), s)
+        if adaptive > 0 and len(indices) > n_density_neighbors:
+            knn_d, knn_i = tree.query(sample_coords, k=n_density_neighbors + 1)
+            local = knn_d[:, 1:].mean(axis=1)
+            local = 0.5 * local + 0.5 * local[knn_i[:, 1:]].mean(axis=1)
+            local = local / np.median(local) * s
+            cell_s = s ** (1 - adaptive) * local ** adaptive
+
+        # all pairs within the outermost ring plus 3 half-widths of each cell's spacing
+        nbrs = tree.query_ball_point(sample_coords, (n_shells + 3 * width) * cell_s)
+        rows = np.repeat(np.arange(len(indices)), [len(x) for x in nbrs])
+        cols = np.concatenate(nbrs).astype(int)
+        keep = rows != cols
+        rows, cols = rows[keep], cols[keep]
+        d = np.linalg.norm(sample_coords[rows] - sample_coords[cols], axis=1) / cell_s[rows]
+
+        for k in range(1, n_shells + 1):
+            w = np.exp(-(d - k) ** 2 / (2 * width ** 2))
+            W = csr_matrix((w, (rows, cols)), shape=(len(indices), len(indices)))
+            row_sums = np.array(W.sum(axis=1)).flatten()
+            row_sums[row_sums == 0] = 1
+            W = diags(1.0 / row_sums) @ W
+            shells[indices, (k - 1) * n_features:k * n_features] = W @ features[indices]
+
+    output = np.hstack([features, shells]) if include_self else shells
+    adata.obsm[out_key] = output
+    adata.uns[f'{out_key}_params'] = {
+        'n_shells': n_shells,
+        'width': width,
+        'adaptive': adaptive,
+        'n_density_neighbors': n_density_neighbors,
+        'spacing': spacings,
+        'include_self': include_self,
+        'n_features_per_block': n_features,
+    }
+
+    if copy:
+        return adata
+    return None
+
+
 def aggregate_neighbors_weighted_simple(
     adata: AnnData,
     n_layers: int = 3,
     use_rep: Optional[str] = None,
     out_key: str = 'X_cellcharter_weighted',
-    hop_decay: float = 0.5,
+    hop_decay: float = 1.0,
     distance_kernel: Literal['exponential', 'inverse', 'gaussian', 'none'] = 'exponential',
     distance_scale: Optional[float] = None,
     spatial_key: str = 'spatial',
@@ -498,7 +656,7 @@ def aggregate_neighbors_weighted_simple(
     out_key : str
         Output key in adata.obsm
     hop_decay : float
-        Decay per hop (0.5 = each hop contributes half as much)
+        Scale of hop h's block = hop_decay^h (1.0 = no scaling)
     distance_kernel : str
         'exponential', 'inverse', 'gaussian', or 'none'
     distance_scale : float, optional
@@ -514,7 +672,7 @@ def aggregate_neighbors_weighted_simple(
     >>> # Use:
     >>> aggregate_neighbors_weighted_simple(
     ...     adata, n_layers=3, use_rep='X_scVI',
-    ...     hop_decay=0.5, distance_kernel='exponential'
+    ...     distance_kernel='gaussian'
     ... )
     """
     aggregate_neighbors_weighted(

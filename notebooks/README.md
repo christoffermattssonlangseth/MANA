@@ -2,6 +2,8 @@
 
 This directory contains analysis notebooks for the MANA (Metric-Aware Neighborhood Aggregation) project.
 
+> **Note (2026-10-20):** before this date `hop_decay` had no effect (it cancelled under row normalization), so the hop_decay findings in MANA-4 and the MANA-6 benchmark conclusions are superseded. See the re-evaluation section in [../CLAUDE.md](../CLAUDE.md) and the results in [../README.md](../README.md). Re-running notebooks that pass `hop_decay=0.2` now gives different features.
+
 ## Active Notebooks
 
 ### [MANA-4.ipynb](MANA-4.ipynb)

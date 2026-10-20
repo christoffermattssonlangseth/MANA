@@ -8,19 +8,26 @@ Core implementation of metric-aware neighborhood aggregation and visualization f
 
 **Main function:** `aggregate_neighbors_weighted()`
 
-Performs distance-weighted neighborhood aggregation with two-level weighting:
-1. Hop-level decay: `hop_decay^h` for neighbors at hop distance h
-2. Distance-based weighting: Exponential, inverse, or gaussian kernels
+Performs distance-weighted neighborhood aggregation over graph-hop rings:
+1. Distance-based weighting within each hop: exponential, inverse, or gaussian kernels
+2. Optional hop-level block scaling: hop h's block is multiplied by `hop_decay^h`
 
 **Key Parameters:**
-- `n_layers` (int): Number of neighborhood layers (recommended: 3-4)
-- `hop_decay` (float): Weight decay per hop (recommended: 0.2)
+- `n_layers` (int): Number of neighborhood layers (recommended: 3)
+- `hop_decay` (float): Block scale per hop (default 1.0; absorbed by a full-covariance GMM, only relevant for Leiden/k-means)
 - `distance_kernel` (str): 'exponential', 'inverse', 'gaussian', or 'none'
 - `aggregations` (str/list): 'mean', 'median', 'sum', 'max', 'var', 'std'
 - `use_rep` (str): Input representation key (e.g., 'X_scVI')
 
 **Output:**
 Stores aggregated features in `adata.obsm[out_key]`
+
+**Also:** `aggregate_neighbors_shells()` (recommended). Aggregates in soft rings of physical distance (Gaussian rings at k × median edge length) instead of graph hops, keeping each ring as a separate block like CellCharter.
+- `n_shells` (int): number of rings (recommended: 3)
+- `width` (float): ring half-width as a fraction of spacing (default 0.5)
+- `spacing` (float): ring spacing; auto = median Delaunay edge per sample
+- `adaptive` (float): 0-1 adaptation of the spacing to local density (default 0.5)
+- `sample_key` (str): compute within each sample
 
 ### plot_spatial_compact_fast.py
 
@@ -80,10 +87,9 @@ sq.gr.spatial_neighbors(adata, coord_type='generic', delaunay=True)
 aggregate_neighbors_weighted(
     adata,
     n_layers=3,
-    hop_decay=0.2,
     aggregations='mean',
     use_rep='X_scVI',
-    distance_kernel='exponential'
+    distance_kernel='gaussian'
 )
 
 # Cluster

@@ -4,17 +4,14 @@ MANA is a metric-aware generalization of the CellCharter neighborhood aggregatio
 
 ## Overview
 
-The central idea is to extend [CellCharter](https://github.com/CSOgroup/cellcharter) with a **two-level weighting strategy**:
+[CellCharter](https://github.com/CSOgroup/cellcharter) represents each cell as `[self | mean of 1-hop neighbors | mean of 2-hop | mean of 3-hop]`. The hop rings are kept as separate blocks, so the downstream clusterer already learns how much each ring matters; a fixed hop decay adds nothing on top of that. What CellCharter does lose is geometry: within a ring every cell counts equally, and in irregular tissue one graph hop can span 10 µm or 60 µm.
 
-1. **Hop-level decay**: Neighbors at hop distance `h` are weighted by `hop_decay^h`
-2. **Distance-based weighting**: Within each hop, spatial distance determines contribution strength
+MANA makes the neighborhood **metric-aware**:
 
-Instead of treating all neighboring cells equally within discrete hop-based rings, MANA weights each neighbor by its physical distance, such that closer cells contribute more strongly than distant ones.
+1. **Distance shells** (`aggregate_neighbors_shells`, recommended): rings are defined by physical distance (soft Gaussian rings at ~1, 2, 3 cell spacings) instead of graph hops, still kept as separate blocks.
+2. **Within-hop distance weighting** (`aggregate_neighbors_weighted`): keeps graph-hop rings but weights cells within each ring by distance.
 
-This creates a **continuous, distance-aware spatial context representation** that better captures:
-- Spatial gradients and microenvironmental transitions
-- Lesion-associated tissue states
-- Smooth variations across tissue space
+The gains concentrate where tissue geometry is irregular: tears and holes, density changes, white matter and disrupted (EAE) tissue.
 
 ## Installation
 
@@ -32,32 +29,34 @@ pip install -r requirements.txt
 ```python
 import scanpy as sc
 import squidpy as sq
-from utils import aggregate_neighbors_weighted, plot_spatial_compact_fast
+import cellcharter as cc
+from utils import aggregate_neighbors_shells, plot_spatial_compact_fast
 
 # Load your spatial data
 adata = sc.read_h5ad('your_data.h5ad')
 
-# Build spatial neighborhood graph
-sq.gr.spatial_neighbors(adata, coord_type='generic', delaunay=True)
+# Build spatial neighborhood graph (used to estimate the cell spacing)
+sq.gr.spatial_neighbors(adata, library_key='sample_id', coord_type='generic', delaunay=True)
+cc.gr.remove_long_links(adata)
 
-# Run weighted aggregation
-aggregate_neighbors_weighted(
+# Aggregate in physical-distance shells
+aggregate_neighbors_shells(
     adata,
-    n_layers=3,           # Number of neighborhood layers
-    hop_decay=0.2,        # Weight decay per hop
-    aggregations='mean',  # Aggregation method
-    use_rep='X_scVI',     # Input representation
-    distance_kernel='exponential'
+    n_shells=3,             # rings at ~1, 2, 3 cell spacings
+    use_rep='X_scVI',
+    sample_key='sample_id',
+    out_key='X_mana_shells',
 )
 
-# Cluster on aggregated features
-sc.pp.neighbors(adata, use_rep='X_weighted_agg_mean', n_neighbors=15)
-sc.tl.leiden(adata, resolution=0.5, key_added='leiden_weighted')
+# Cluster on aggregated features (as in CellCharter)
+model = cc.tl.Cluster(n_clusters=10)
+model.fit(adata, use_rep='X_mana_shells')
+adata.obs['mana_cluster'] = model.predict(adata, use_rep='X_mana_shells')
 
 # Visualize results
 plot_spatial_compact_fast(
     adata,
-    color='leiden_weighted',
+    color='mana_cluster',
     groupby='sample_id',
     cols=3,
     height=8
@@ -86,8 +85,9 @@ MANA/
 ## Key Features
 
 ### Weighted Aggregation
-- Multiple distance kernels (exponential, inverse, gaussian)
-- Flexible hop decay schemes
+- Physical-distance shells (recommended)
+- Within-hop distance kernels (exponential, inverse, gaussian)
+- Optional per-hop block scaling (`hop_decay`, only relevant for Leiden/k-means)
 - Various aggregation methods (mean, median, sum, max, var)
 - Sparse matrix operations for efficiency
 
@@ -98,36 +98,43 @@ MANA/
 - Category highlighting with custom transparency
 - Publication-ready output
 
-## Optimal Parameters
+## Parameters
 
-Based on systematic testing in [notebooks/MANA-4.ipynb](notebooks/MANA-4.ipynb) and benchmarking in [notebooks/MANA-6.ipynb](notebooks/MANA-6.ipynb):
+- **n_shells / n_layers = 3**
+- **width = 0.5** (shells), spacing auto-estimated per sample as the median Delaunay edge
+- **adaptive = 0.5** (shells): partial adaptation of the spacing to local cell density. Use 0 if physical distance is what matters (e.g. diffusion range); use 1 if density varies independently of the domains you want
+- **distance_kernel = 'gaussian'** if using within-hop weighting
+- **hop_decay = 1.0** (default). It scales each hop's block; a full-covariance GMM absorbs this, so only tune it for Leiden/k-means pipelines.
 
-- **hop_decay = 0.2**: Consistently best across all configurations
-- **n_layers = 3-4**: Optimal balance between spatial purity and transcriptional coherence
-- **distance_kernel = 'gaussian'**: Best for tissues with defined boundaries (e.g., MS lesions, organ compartments)
-- **distance_kernel = 'exponential'**: Best for gradual microenvironmental transitions (e.g., tumor microenvironment)
-- **aggregation = 'mean'**: Recommended starting point (balanced performance)
+## Benchmarking Results (2026-10-20)
 
-See [CLAUDE.md](CLAUDE.md) for detailed parameter optimization analysis.
+**Synthetic tissues with known domains** (10 seeds each, GMM with true K, overall ARI):
 
-## Benchmarking Results
+| Tissue layout | CellCharter | MANA within-hop (gaussian) | Shells, adaptive=0 | Shells, adaptive=0.5 |
+|---|---|---|---|---|
+| Holes / tears | 0.53 | 0.57 | 0.72 | 0.72 |
+| Thin layers | 0.54 | 0.52 | 0.61 | 0.61 |
+| Uniform | 0.57 | 0.56 | **0.65** | 0.63 |
+| Density contrast | 0.63 | 0.64 | 0.69 | 0.70 |
+| Small niches | 0.50 | 0.50 | 0.51 | 0.51 |
+| Smoothly varying density | 0.65 | 0.60 | 0.60 | **0.73** |
+| Mean | 0.57 | 0.57 | 0.63 | **0.65** |
 
-Head-to-head comparison with CellCharter on MS lesion dataset (107K cells, 9 samples):
+The default (adaptive=0.5) beats CellCharter in all six layouts (wins 7-9/10 seeds each; p ≤ 0.014 for holes, thin layers and smoothly varying density).
 
-**MANA (gaussian) vs CellCharter:**
-- ✅ **+14% spatial coherence** (local purity: 0.761 vs 0.665, p < 0.001)
-- ✅ **+30% better gradient smoothness** (1.119 vs 1.607, lower = better)
-- ✅ **+5.6% more stable clusters** (bootstrap ARI: 0.624 vs 0.591)
-- ⚠️ Small transcriptional trade-off (silhouette: -0.037 vs +0.032)
-- 🏆 **Overall winner**: Composite score 0.693 vs 0.252
+**EAE spinal cord** (877K cells, 107 samples): how well do the neighbor blocks predict the true cell-type composition (anno_L2) around each cell? (Ridge regression, sample-held-out CV.)
 
-**Key advantages:**
-- Dramatically better at capturing smooth spatial gradients
-- Significantly improved spatial organization of clusters
-- More reproducible results across data subsampling
-- Acceptable transcriptional coherence trade-off
+| R² | CellCharter | MANA within-hop | Shells, adaptive=0 | Shells, adaptive=0.5 |
+|---|---|---|---|---|
+| composition within 30 µm | 0.376 | 0.406 | **0.427** | 0.417 |
+| composition within 60 µm | 0.454 | 0.462 | **0.478** | 0.477 |
+| 1-3 hop composition (CellCharter-favoured control) | **0.493** | 0.487 | 0.465 | 0.474 |
 
-See [notebooks/MANA-6.ipynb](notebooks/MANA-6.ipynb) for complete benchmark analysis with interpretation guide.
+Shells reduce error most in white matter (12-17%), the sparsest/most irregular cells and EAE vs control tissue (7-9% vs ~0%). The fixed-radius targets favour adaptive=0 by construction.
+
+**Known limitation:** with adaptive=0, where density varies smoothly and independently of domains, shells partly cluster by density; adaptive>0 fixes this at a small cost in physical-distance fidelity.
+
+**Superseded results:** the earlier MANA-4/MANA-6 conclusions (`hop_decay=0.2` best; composite score 0.693 vs 0.252) do not hold. `hop_decay` had no effect before the 2026-10-20 fix, and local purity / gradient smoothness reward spatial smoothing by construction. `compartment_anno` is a relabelled CellCharter (k=10) clustering and cannot serve as ground truth for MANA vs CellCharter.
 
 ## Documentation
 
@@ -151,4 +158,4 @@ If you use MANA in your research, please cite:
 
 ## Status
 
-**Ready for publication.** Parameter optimization complete, comprehensive benchmarking validates MANA's superiority over CellCharter with quantitative evidence (14-30% improvements across key metrics, p < 0.001).
+**In development.** Distance shells beat CellCharter on geometrically irregular tissue (synthetic ground truth and EAE composition encoding). Open item: a real-data clustering comparison against marker genes.
