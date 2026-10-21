@@ -1,8 +1,42 @@
-# MANA Benchmarks (2026-10-20)
+# MANA Benchmarks (2026-10-21)
 
 Scripts behind the benchmark tables in [../README.md](../README.md). Run them with the `cellcharter` conda env.
 
-## Synthetic tissues with known domains
+## Harness
+
+`methods.py` is the registry of feature builders (CellCharter, CellCharter mean+var, MANA shells,
+MANA shells+var) plus shared graph building and `cc.tl.Cluster` helpers. Add a new idea to
+`METHODS` and the realistic synthetic and Allen benchmarks pick it up. All features must be
+computed from the embedding alone (no annotations); annotations are only used for scoring.
+`cc.tl.Cluster` is not reproducible across runs, so every benchmark uses several seeds.
+
+## Realistic synthetic tissues (use this one)
+
+`realistic_synthetic.py` adds smooth within-domain cell-state variation and cell-type patches,
+calibrated to EAE's block-variance profile, plus lesion-rim and patchy-vs-mixed layouts.
+8 layouts x N seeds, `cc.tl.Cluster` at the true K, ARI.
+
+```bash
+N_JOBS=8 python realistic_synthetic.py 10 results_realistic.csv
+```
+
+## Allen MERFISH whole mouse brain (independent atlas labels)
+
+`allen_merfish.py` downloads 6 coronal sections of MERFISH-C57BL6J-638850 (~1.6 GB, public S3),
+builds PCA + per-section features for every method in `methods.py`, and scores `cc.tl.Cluster`
+against CCF labels: cortical layers (cortex-only K=6, 10 seeds) and layers / CA1-CA3-DG /
+thalamic nuclei / regions in whole-section clusterings (K=20, 5 seeds). Clustering 642K cells is
+heavy; run it on a big machine.
+
+```bash
+python allen_merfish.py download /path/allen && python allen_merfish.py prep /path/allen
+N_JOBS=5 python allen_merfish.py bench /path/allen
+```
+
+## Synthetic tissues with known domains (original, i.i.d. cells)
+
+Cells are drawn independently within domains, which exaggerates some effects (e.g. feature
+z-scoring); prefer `realistic_synthetic.py`.
 
 `synthetic_benchmark.py` simulates seven tissue layouts (uniform, density_contrast, thin_layers,
 small_niches, holes, variable_density, gradient). Domains are defined by cell-type composition and
@@ -32,6 +66,10 @@ stratified by local geometry, density, compartment, cell class and condition.
 ```bash
 python real_composition.py 3 repo_shells_0,repo_shells_0.5 eae_mana_subset.h5ad
 ```
+
+Fixed 2026-10-21: one-hot targets were built from per-sample category codes, and AnnData
+subsetting drops unused categories, so targets were misaligned in 26/107 sections. Results from
+before the fix have too-low R² (rankings were unchanged).
 
 The input is a light extract (obs annotations + `spatial` + `X_scVI`, ~130 MB) of
 `/Volumes/processing2/RRmap/data/EAE_proseg_clustered_louvain_leiden_all_sections_annotated_rotated_scVI_embedding_for_mana.h5ad`,

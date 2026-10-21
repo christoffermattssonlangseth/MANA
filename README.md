@@ -10,8 +10,11 @@ MANA makes the neighborhood **metric-aware**:
 
 1. **Distance shells** (`aggregate_neighbors_shells`, recommended): rings are defined by physical distance (soft Gaussian rings at ~1, 2, 3 cell spacings) instead of graph hops, still kept as separate blocks.
 2. **Within-hop distance weighting** (`aggregate_neighbors_weighted`): keeps graph-hop rings but weights cells within each ring by distance.
+3. **Ring variance** (`n_var_shells` / `n_var_layers`): adds the variance of each ring next to its mean, so a mixed neighborhood no longer looks like its average.
 
-The gains concentrate where tissue geometry is irregular: tears and holes, density changes, white matter and disrupted (EAE) tissue.
+Like CellCharter, everything is computed from the cell embedding alone (no annotations).
+
+**What actually matters (2026-10-21 benchmarks):** the biggest single gain is ring variance, and CellCharter already has it: `cc.gr.aggregate_neighbors(..., aggregations=['mean', 'var'])` (off by default). On Allen MERFISH cortex it raises layer ARI from 0.39 to 0.46. MANA shells + variance ties that on regular brain tissue and is better where physical distance matters: irregular synthetic tissue and the cell-type mix within 30-60 µm in EAE.
 
 ## Installation
 
@@ -39,14 +42,18 @@ adata = sc.read_h5ad('your_data.h5ad')
 sq.gr.spatial_neighbors(adata, library_key='sample_id', coord_type='generic', delaunay=True)
 cc.gr.remove_long_links(adata)
 
-# Aggregate in physical-distance shells
+# Aggregate in physical-distance shells, with the variance of each shell
 aggregate_neighbors_shells(
     adata,
     n_shells=3,             # rings at ~1, 2, 3 cell spacings
+    n_var_shells=3,         # add per-shell variance blocks
     use_rep='X_scVI',
     sample_key='sample_id',
     out_key='X_mana_shells',
 )
+
+# Graph-hop equivalent (= CellCharter with aggregations=['mean', 'var']):
+# aggregate_neighbors_weighted(adata, n_layers=3, n_var_layers=3, distance_kernel='none', ...)
 
 # Cluster on aggregated features (as in CellCharter)
 model = cc.tl.Cluster(n_clusters=10)
@@ -70,6 +77,7 @@ MANA/
 ├── README.md                  # This file
 ├── CLAUDE.md                  # Detailed development log
 ├── requirements.txt           # Python dependencies
+├── benchmarks/                # Synthetic, Allen MERFISH and EAE benchmarks (see benchmarks/README.md)
 ├── utils/                     # Core implementation
 │   ├── __init__.py
 │   ├── aggregate_neighbors_weighted.py
@@ -86,6 +94,7 @@ MANA/
 
 ### Weighted Aggregation
 - Physical-distance shells (recommended)
+- Per-ring variance blocks (raw or log)
 - Within-hop distance kernels (exponential, inverse, gaussian)
 - Optional per-hop block scaling (`hop_decay`, only relevant for Leiden/k-means)
 - Various aggregation methods (mean, median, sum, max, var)
@@ -101,44 +110,34 @@ MANA/
 ## Parameters
 
 - **n_shells / n_layers = 3**
+- **n_var_shells / n_var_layers = 3**: variance of every ring (raw; `var_log=True` for log variance, which lost less on hippocampal fields but less overall)
 - **width = 0.5** (shells), spacing auto-estimated per sample as the median Delaunay edge
 - **adaptive = 0.5** (shells): partial adaptation of the spacing to local cell density. Use 0 if physical distance is what matters (e.g. diffusion range); use 1 if density varies independently of the domains you want
 - **distance_kernel = 'gaussian'** if using within-hop weighting
-- **hop_decay = 1.0** (default). It scales each hop's block; a full-covariance GMM absorbs this, so only tune it for Leiden/k-means pipelines.
+- **hop_decay = 1.0** (default). It scales each hop's block. A full-covariance GMM's likelihood is unaffected by this, but `cc.tl.Cluster` starts from k-means, which is scale-sensitive, so block scaling can change results. On realistic data (EAE, realistic synthetic) z-scoring all features made no difference.
 
-## Benchmarking Results (2026-10-20)
+## Benchmarking Results (2026-10-21)
 
-**Synthetic tissues with known domains** (10 seeds each, GMM with true K, overall ARI):
+All clustering uses `cc.tl.Cluster`, which is not reproducible across runs even at a fixed seed, so every number is a mean over several seeds. Scripts are in [benchmarks/](benchmarks/).
 
-| Tissue layout | CellCharter | MANA within-hop (gaussian) | Shells, adaptive=0 | Shells, adaptive=0.5 |
-|---|---|---|---|---|
-| Holes / tears | 0.53 | 0.57 | 0.72 | 0.72 |
-| Thin layers | 0.54 | 0.52 | 0.61 | 0.61 |
-| Uniform | 0.57 | 0.56 | **0.65** | 0.63 |
-| Density contrast | 0.63 | 0.64 | 0.69 | 0.70 |
-| Small niches | 0.50 | 0.50 | 0.51 | 0.51 |
-| Smoothly varying density | 0.65 | 0.60 | 0.60 | **0.73** |
-| Mean | 0.57 | 0.57 | 0.63 | **0.65** |
+| | Allen cortex layers (K=6, ARI) | Allen layers, whole sections (K=20) | Allen CA1/CA3/DG (K=20) | Realistic synthetic (ARI) | EAE composition within 30 µm (R²) |
+|---|---|---|---|---|---|
+| CellCharter (default, mean) | 0.393 | 0.408 | **0.253** | 0.224 | 0.554 |
+| CellCharter `aggregations=['mean','var']` | 0.457 | **0.489** | 0.129 | 0.297 | 0.577 |
+| MANA shells (mean) | 0.393* | 0.397* | 0.237* | 0.260 | 0.609 |
+| **MANA shells + variance** | **0.468** | 0.466 | 0.134 | **0.314** | **0.637** |
 
-The default (adaptive=0.5) beats CellCharter in all six layouts (wins 7-9/10 seeds each; p ≤ 0.014 for holes, thin layers and smoothly varying density).
+\* from the first Allen run (cortex 5 seeds, whole sections 3 seeds).
 
-**EAE spinal cord** (877K cells, 107 samples): how well do the neighbor blocks predict the true cell-type composition (anno_L2) around each cell? (Ridge regression, sample-held-out CV.)
+- **Allen MERFISH** (6 coronal sections, 642K cells, labels from CCF registration; cortex 10 seeds, whole sections 5): variance is the gain (layers p<0.001 vs mean only). Shells + variance ties CellCharter mean+var (p=0.15-0.69). Both lose on hippocampal fields, where the mean-only features do best; log variance (`var_log=True`) lost less there (0.29) but gained less on layers (0.44-0.47).
+- **Realistic synthetic** (8 layouts x 10 seeds, simulator calibrated to EAE's within-domain structure): shells + variance beats CellCharter mean+var by +0.017 (43/80 runs, p=0.03) and mean-only CellCharter by +0.09; largest at density contrast (0.21 -> 0.49) and small niches.
+- **EAE composition** (877K cells, 107 sections; ridge regression from neighbor blocks to the anno_L2 mix around each cell, sample-held-out CV): shells + variance is best for physical radii (30 µm 0.637, 60 µm 0.768, all 107 samples better than CellCharter). CellCharter mean+var is best on the 1-3 hop composition control (0.790), as expected for a graph-hop target.
+- **EAE clustering** (5 sections, marker modules, 5 seeds): at K=10 adding variance helps slightly (marker eta² 0.170 -> 0.176-0.179) and shells + variance is the most seed-stable (0.77 vs 0.67); at K=20 all methods tie. The S4-T sections (2-4x lower counts per cell) can claim their own clusters with any method; consider fitting without them and predicting them afterwards.
 
-| R² | CellCharter | MANA within-hop | Shells, adaptive=0 | Shells, adaptive=0.5 |
-|---|---|---|---|---|
-| composition within 30 µm | 0.376 | 0.406 | **0.427** | 0.417 |
-| composition within 60 µm | 0.454 | 0.462 | **0.478** | 0.477 |
-| 1-3 hop composition (CellCharter-favoured control) | **0.493** | 0.487 | 0.465 | 0.474 |
-
-Shells reduce error most in white matter (12-17%), the sparsest/most irregular cells and EAE vs control tissue (7-9% vs ~0%). The fixed-radius targets favour adaptive=0 by construction.
-
-**EAE clustering** (5 samples, 63K cells, `cc.tl.Cluster`, multiple seeds): at K=10 both methods find the same compartments and explain the same marker-module variance (0.17 per cell). At K=20/30 CellCharter explains slightly more (K=30: 0.244 vs 0.225, all 5 seeds) while MANA shells is slightly more seed-stable (ARI 0.72 vs 0.70). So MANA's better neighborhood encoding does not translate into better clusters on this tissue; its advantage is in irregular geometry and in using the features directly. Single clustering runs are not reproducible enough to compare methods: always use several seeds.
-
-**Data note:** the S4-T sections (S4_T1_1, S4_T1_2, S4_T2_0, S4_T2_2, S4_T3_0) have 2-4x lower counts per cell (median 374-685 vs 1547) and are the most offset samples in the scVI embedding, despite per-section batch correction. They can claim their own clusters with either method; consider fitting clusters without them and predicting them afterwards.
-
-**Known limitation:** with adaptive=0, where density varies smoothly and independently of domains, shells partly cluster by density; adaptive>0 fixes this at a small cost in physical-distance fidelity.
-
-**Superseded results:** the earlier MANA-4/MANA-6 conclusions (`hop_decay=0.2` best; composite score 0.693 vs 0.252) do not hold. `hop_decay` had no effect before the 2026-10-20 fix, and local purity / gradient smoothness reward spatial smoothing by construction. `compartment_anno` is a relabelled CellCharter (k=10) clustering and cannot serve as ground truth for MANA vs CellCharter.
+**Corrections to earlier results:**
+- `hop_decay` had no effect before the 2026-10-20 fix, and local purity / gradient smoothness reward smoothing by construction, so the MANA-4/MANA-6 conclusions (`hop_decay=0.2` best; composite 0.693 vs 0.252) do not hold. `compartment_anno` is a relabelled CellCharter (k=10) clustering and cannot be ground truth.
+- The first EAE composition numbers (CellCharter 0.376, shells 0.427 at 30 µm) were too low: per-sample subsetting dropped unused cell-type categories and misaligned the targets in 26/107 sections (fixed in `real_composition.py`). Method rankings were unchanged; the adaptive-spacing comparison (a=0 / 0.5 / 1) has not been re-run with the fix.
+- The original synthetic simulator draws cells independently within domains, which exaggerates effects (z-scoring features looked like +0.11 ARI there, ~0 on EAE). Use `realistic_synthetic.py`.
 
 ## Documentation
 
@@ -162,4 +161,4 @@ If you use MANA in your research, please cite:
 
 ## Status
 
-**In development.** Distance shells beat CellCharter on geometrically irregular tissue (synthetic ground truth and EAE composition encoding). On EAE domain clustering the two methods are roughly equivalent (CellCharter slightly ahead at high K). Next: a public dataset with expert domain annotations.
+**In development.** Ring variance (already available in CellCharter) is the largest gain; MANA shells + variance matches it on regular brain tissue and improves on it where physical distance matters (irregular tissue, physical-radius composition). Next: richer annotation-free ring statistics, feature compression and consensus clustering, tested with the harness in `benchmarks/`.

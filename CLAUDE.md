@@ -11,11 +11,30 @@ This document tracks the development and optimization of the MANA (Metric-Aware 
 
 This creates a continuous, distance-aware spatial context representation that better captures spatial gradients and microenvironmental transitions in spatial transcriptomics data.
 
+## 2026-10-21 Variance, Allen MERFISH and corrections (supersedes parts of 2026-10-20)
+
+**How CellCharter works** (`cellcharter/gr/_aggr.py`): Delaunay graph, long edges (>99th percentile) removed; hop rings are disjoint BFS shells (exactly k hops); each ring is an unweighted mean (1/|ring|); output `[self | ring1 | ring2 | ring3]`; ring importance is left to the full-covariance GMM. It also supports `aggregations=['mean', 'var']` (raw variance per ring), off by default. Like CellCharter, MANA must stay annotation-free: features come from the embedding only; annotations are for scoring.
+
+**Ring variance is the largest gain, and CellCharter already has it.** Added `n_var_layers` / `n_var_shells` (+ `var_log`, `var_eps`) to `aggregate_neighbors_weighted` / `aggregate_neighbors_shells`; raw variance with `distance_kernel='none'`, `n_var_layers=3` equals CellCharter mean+var up to block order. Raw beat log overall; log lost less on hippocampal fields.
+
+**Allen MERFISH benchmark** (`benchmarks/allen_merfish.py`; MERFISH-C57BL6J-638850 sections 30/36/38/40/44/49, 642K cells, 550 genes, PCA 30; labels from CCF registration, where fine labels follow the atlas but major regions were partly fitted to cell-type maps). Cortex-only K=6 (10 seeds) layer ARI: CellCharter 0.393, CC mean+var 0.457, shells+var 0.468. Whole sections K=20 (5 seeds): layers 0.408 / 0.489 / 0.466; CA1/CA3/DG 0.253 / 0.129 / 0.134. Plain shells = CellCharter on brain (regular geometry). Composition and PCA-compression variants queued.
+
+**Realistic synthetic** (`benchmarks/realistic_synthetic.py`): the old simulator draws cells i.i.d. within domains (self/ring-3 variance ratio 12x vs 3.4x in EAE). New one adds a smooth within-domain cell-state field and cell-type patches (field_amp=1, field_len=6, patch_len=3, patch_strength=0.9 match EAE). Mean ARI over 8 layouts x 10 seeds: CellCharter 0.224, CC mean+var 0.297, shells 0.260, shells+var 0.314 (vs CC mean+var +0.017, p=0.03).
+
+**EAE composition** (fixed script): R² within 30 µm CellCharter 0.554, CC mean+var 0.577, shells 0.609, shells+var 0.637 (107/107 samples better than CellCharter); hop3 control CC mean+var 0.790 best. **EAE clustering** K=10: variance raises marker eta² 0.170 -> 0.176-0.179; shells+var most seed-stable; K=20 tie.
+
+**Corrections:**
+- Composition targets were misaligned in 26/107 sections (AnnData subsetting drops unused categories, shifting codes). Old R² (0.376 / 0.427) were too low; rankings unchanged. The adaptive a=0/0.5/1 composition comparison was not re-run.
+- Block scaling is not fully absorbed: `cc.tl.Cluster` initialises with k-means, which is scale-sensitive. z-scoring gave +0.11 ARI on the i.i.d. simulator but ~0 on EAE and the realistic simulator.
+- With scipy >= 1.17, `cc.gr.aggregate_neighbors` and MANA's old `M[np.ix_(idx, idx)]` crash on samples above ~46K cells (n x n index overflow). MANA now uses `_subset_square` (rows then columns); use `aggregate_neighbors_weighted(distance_kernel='none')` as a CellCharter drop-in.
+
+**Recommended now:** `aggregate_neighbors_shells(adata, n_shells=3, n_var_shells=3, use_rep='X_scVI', sample_key='sample_id')`, or for the CellCharter-equivalent `cc.gr.aggregate_neighbors(..., aggregations=['mean', 'var'])`; then `cc.tl.Cluster` with several seeds.
+
 ## 2026-10-20 Re-evaluation (supersedes Phases 1-3 conclusions below)
 
 **Bug:** `hop_decay` was multiplied into the weights *before* row normalization, so it cancelled exactly whenever `normalize_weights=True` (outputs for decay 0.2/0.5/1.0 identical to 1e-16). All MANA-4…MANA-9 results therefore compared only the within-hop distance kernel against CellCharter; "hop_decay=0.2 best" was clustering noise. With `distance_kernel='none'` the function reproduces `cc.gr.aggregate_neighbors` exactly. Fixed: decay now scales each hop's output block; default changed to 1.0. Notebooks that pass `hop_decay=0.2` will now produce different features if re-run.
 
-**Why hop decay is not the lever:** CellCharter concatenates hop rings as separate blocks, so the clusterer learns per-ring importance. A full-covariance GMM (`cc.tl.Cluster`, default) absorbs any fixed block scaling. Decay only matters for scale-sensitive clustering (Leiden on kNN, k-means). The information CellCharter actually discards is *within-ring geometry*.
+**Why hop decay is not the lever:** CellCharter concatenates hop rings as separate blocks, so the clusterer learns per-ring importance. A full-covariance GMM's likelihood (`cc.tl.Cluster`, default) is unaffected by fixed block scaling, though its k-means initialisation is not (see 2026-10-21); in practice decay mainly matters for Leiden on kNN or k-means. The information CellCharter actually discards is *within-ring geometry*.
 
 **Evaluation problems found:**
 - `compartment_anno` is a relabelled `cluster_cellcharter_10` (cluster purity 1.000), so it cannot be ground truth for MANA vs CellCharter.
@@ -40,7 +59,7 @@ This creates a continuous, distance-aware spatial context representation that be
 
 **S4-T data quality:** S4_T1_1, S4_T1_2, S4_T2_0, S4_T2_2, S4_T3_0 have median 374-685 counts/cell (dataset median 1547) and are the most offset samples in X_scVI (S4_T2_2 rank 1/107; mean rank 12 vs 56). `_scvi_batch` is already per-section (107 batches), so this is lost signal, not missing batch correction. S4_T2_2 is Xenium run 0054723. Neighborhood smoothing makes constant per-section offsets more prominent, so these sections can claim their own clusters.
 
-**Recommended defaults now:** `aggregate_neighbors_shells(adata, n_shells=3, use_rep='X_scVI', sample_key='sample_id')` (adaptive=0.5) then `cc.tl.Cluster`.
+**Recommended defaults (2026-10-20, superseded by 2026-10-21 above):** `aggregate_neighbors_shells(adata, n_shells=3, use_rep='X_scVI', sample_key='sample_id')` (adaptive=0.5) then `cc.tl.Cluster`. The EAE composition R² values in this section were affected by the category bug described above.
 
 ## Implementation
 
@@ -335,12 +354,13 @@ While decay=0.5 gives:
    - Spatial coherence of clusters
    - Alignment with known anatomy
 
-### Quick Start (Recommended Defaults, updated 2026-10-20)
+### Quick Start (Recommended Defaults, updated 2026-10-21)
 
 ```python
 aggregate_neighbors_shells(
     adata,
     n_shells=3,
+    n_var_shells=3,
     use_rep='X_scVI',
     sample_key='sample_id',
 )
@@ -525,7 +545,7 @@ MANA/
 
 This is an active research project. Parameter recommendations may be refined as we analyze more datasets.
 
-**Current Status (2026-10-20):** Re-evaluated, see "2026-10-20 Re-evaluation" at the top. Distance shells are the recommended method; the benchmark claims below are superseded.
+**Current Status (2026-10-21):** see the 2026-10-21 and 2026-10-20 sections at the top. Shells + ring variance are recommended; ring variance itself is a CellCharter option. The benchmark claims below are superseded.
 
 **Recent Updates (2026-01-12):**
 

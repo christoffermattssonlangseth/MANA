@@ -40,7 +40,9 @@ for s, idx in a.obs.groupby('sample_id', observed=True).indices.items():
         feats[k].append(vfeatures(b, L, k, use_rep='X_scVI')[:, LAT:])
     feats['MANA-gauss'].append(b.obsm['gaussian'][:, LAT:])
 
-    onehot = np.eye(len(types))[b.obs.anno_L2.cat.codes.values]
+    # codes against the global categories: subsetting drops unused categories per sample,
+    # which would otherwise shift the codes and misalign the target columns between samples
+    onehot = np.eye(len(types))[pd.Categorical(b.obs.anno_L2, categories=types).codes]
     xy = b.obsm['spatial']; tree = cKDTree(xy)
     for r, name in [(30, 'phys30'), (60, 'phys60')]:
         P = tree.sparse_distance_matrix(tree, r, output_type='coo_matrix').tocsr()
