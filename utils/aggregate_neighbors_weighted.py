@@ -19,6 +19,20 @@ from typing import Union, Literal, Optional, List
 import warnings
 
 
+def _subset_square(M, indices):
+    """M[indices][:, indices] for a sparse matrix. Avoids M[np.ix_(...)], which builds an
+    n x n index array in recent scipy and overflows for samples above ~46K cells."""
+    M = csr_matrix(M)
+    return M[indices].tocsc()[:, indices].tocsr()
+
+
+def _ring_variance(W, features, mean, log=False, eps=1e-3):
+    """Weighted variance per feature for a row-normalized ring weight matrix W
+    (optionally log(variance + eps))."""
+    var = np.maximum(W @ (features ** 2) - mean ** 2, 0)
+    return np.log(var + eps) if log else var
+
+
 def compute_hop_matrices(
     connectivity: csr_matrix,
     n_layers: int,
@@ -156,6 +170,9 @@ def aggregate_neighbors_weighted(
     normalize_weights: bool = True,
     include_self: bool = True,
     chunk_size: Optional[int] = None,  # NEW: for memory-efficient processing
+    n_var_layers: int = 0,
+    var_log: bool = False,
+    var_eps: float = 1e-3,
 ) -> Optional[AnnData]:
     """
     Aggregate neighbor features with hop-level decay and distance-based weighting.
@@ -193,8 +210,8 @@ def aggregate_neighbors_weighted(
         - list: explicit weights for each hop [w1, w2, w3, ...]
         Default 1.0 (no scaling, as in CellCharter). Because hops are concatenated as
         separate blocks rather than pooled, this only rescales features: it matters for
-        scale-sensitive clustering (Leiden/kNN, k-means) but is largely absorbed by a
-        full-covariance GMM (cc.tl.Cluster).
+        scale-sensitive clustering (Leiden/kNN, k-means). A full-covariance GMM's likelihood
+        ignores it, but cc.tl.Cluster's k-means initialisation does not.
         Note: before 2026-10-20 the decay was applied before row normalization and
         therefore had no effect when normalize_weights=True.
     distance_kernel : str
@@ -212,7 +229,19 @@ def aggregate_neighbors_weighted(
         If True, normalize weights to sum to 1 per cell per hop
     include_self : bool
         If True, include cell's own features (hop 0) in output
-        
+    n_var_layers : int
+        Append variance blocks for the first n_var_layers hops: the weighted variance of the
+        hop's neighbours per feature, using the same (row-normalized) weights as the mean.
+        Output becomes [self | mean hop 1..n_layers | var hop 1..n_var_layers]. Variance
+        measures how mixed a ring is, which the mean cannot. With distance_kernel='none' and
+        n_var_layers=n_layers this matches cc.gr.aggregate_neighbors(aggregations=['mean', 'var'])
+        up to block order (irrelevant for a GMM). Default 0 (off).
+    var_log : bool
+        Use log(variance + var_eps) instead of raw variance. Raw was better overall in our
+        benchmarks; log lost less on hippocampal fields (Allen MERFISH).
+    var_eps : float
+        Offset inside the log (only with var_log=True).
+
     Returns
     -------
     If copy=True, returns modified AnnData. Otherwise modifies in place.
@@ -323,6 +352,9 @@ def aggregate_neighbors_weighted(
     # Initialize storage for each hop's aggregated features
     hop_aggregated_all = [{agg: np.zeros((n_cells, n_features)) for agg in aggregations}
                           for _ in range(n_layers)]
+    if n_var_layers > n_layers:
+        raise ValueError(f"n_var_layers ({n_var_layers}) cannot exceed n_layers ({n_layers})")
+    var_blocks = [np.zeros((n_cells, n_features)) for _ in range(n_var_layers)]
 
     # Process each sample
     for sample_idx, (sample_name, indices) in enumerate(sample_indices.items()):
@@ -339,11 +371,11 @@ def aggregate_neighbors_weighted(
         # Get sample-specific connectivity and compute hop matrices
         if process_by_sample:
             # Extract subgraph for this sample
-            sample_connectivity = connectivity_binary[np.ix_(indices, indices)]
+            sample_connectivity = _subset_square(connectivity_binary, indices)
             sample_hop_matrices = compute_hop_matrices(sample_connectivity, n_layers)
         else:
             # Use global hop matrices, extract sample portion
-            sample_hop_matrices = [hm[np.ix_(indices, indices)] for hm in hop_matrices]
+            sample_hop_matrices = [_subset_square(hm, indices) for hm in hop_matrices]
 
         # Process each hop for this sample
         for hop_idx, hop_weight in enumerate(hop_weights):
@@ -365,6 +397,15 @@ def aggregate_neighbors_weighted(
                 row_sums[row_sums == 0] = 1  # Prevent division by zero
                 normalizer = diags(1.0 / row_sums)
                 weighted_matrix = normalizer @ weighted_matrix
+
+            if hop_idx < n_var_layers:
+                W = weighted_matrix
+                if not normalize_weights:
+                    rs = np.array(W.sum(axis=1)).flatten()
+                    rs[rs == 0] = 1
+                    W = diags(1.0 / rs) @ W
+                var_blocks[hop_idx][indices] = _ring_variance(
+                    W, sample_features, W @ sample_features, var_log, var_eps)
 
             # Compute aggregations
             for agg in aggregations:
@@ -461,6 +502,7 @@ def aggregate_neighbors_weighted(
     for hop_idx in range(n_layers):
         for agg in aggregations:
             all_aggregated.append(hop_aggregated_all[hop_idx][agg])
+    all_aggregated.extend(var_blocks)
 
     # keep a float input's dtype (cc.tl.Cluster rejects float64 by default)
     output = np.hstack(all_aggregated)
@@ -478,6 +520,9 @@ def aggregate_neighbors_weighted(
         'distance_scale': distance_scale,
         'aggregations': aggregations,
         'include_self': include_self,
+        'n_var_layers': n_var_layers,
+        'var_log': var_log,
+        'var_eps': var_eps,
         'n_features_per_block': n_features,
     }
     
@@ -499,6 +544,9 @@ def aggregate_neighbors_shells(
     n_density_neighbors: int = 15,
     include_self: bool = True,
     copy: bool = False,
+    n_var_shells: int = 0,
+    var_log: bool = False,
+    var_eps: float = 1e-3,
 ) -> Optional[AnnData]:
     """
     Aggregate neighbor features in soft rings of physical distance.
@@ -541,6 +589,13 @@ def aggregate_neighbors_shells(
         Neighbours used for the local spacing estimate
     include_self : bool
         If True, include the cell's own features as the first block
+    n_var_shells : int
+        Append weighted-variance blocks for the first n_var_shells shells, after the mean
+        blocks (see aggregate_neighbors_weighted's n_var_layers). Default 0.
+    var_log : bool
+        Use log(variance + var_eps) instead of raw variance
+    var_eps : float
+        Offset inside the log (only with var_log=True)
 
     Returns
     -------
@@ -578,6 +633,9 @@ def aggregate_neighbors_shells(
     if not np.issubdtype(features.dtype, np.floating):
         features = features.astype(np.float32)
     shells = np.zeros((n_cells, n_shells * n_features), dtype=features.dtype)
+    if n_var_shells > n_shells:
+        raise ValueError(f"n_var_shells ({n_var_shells}) cannot exceed n_shells ({n_shells})")
+    var_block = np.zeros((n_cells, n_var_shells * n_features), dtype=features.dtype)
     spacings = {}
     for sample_name, indices in sample_indices.items():
         sample_coords = coords[indices]
@@ -586,7 +644,7 @@ def aggregate_neighbors_shells(
         s = spacing
         if s is None:
             if distances is not None:
-                d = distances[np.ix_(indices, indices)].data
+                d = _subset_square(distances, indices).data
                 s = float(np.median(d)) if len(d) else None
             if s is None:
                 d, _ = tree.query(sample_coords, k=min(7, len(indices)))
@@ -616,9 +674,15 @@ def aggregate_neighbors_shells(
             row_sums = np.array(W.sum(axis=1)).flatten()
             row_sums[row_sums == 0] = 1
             W = diags(1.0 / row_sums) @ W
-            shells[indices, (k - 1) * n_features:k * n_features] = W @ features[indices]
+            mean = W @ features[indices]
+            shells[indices, (k - 1) * n_features:k * n_features] = mean
+            if k <= n_var_shells:
+                var_block[indices, (k - 1) * n_features:k * n_features] = _ring_variance(
+                    W, features[indices], mean, var_log, var_eps)
 
     output = np.hstack([features, shells]) if include_self else shells
+    if n_var_shells:
+        output = np.hstack([output, var_block])
     adata.obsm[out_key] = output
     adata.uns[f'{out_key}_params'] = {
         'n_shells': n_shells,
@@ -627,6 +691,9 @@ def aggregate_neighbors_shells(
         'n_density_neighbors': n_density_neighbors,
         'spacing': spacings,
         'include_self': include_self,
+        'n_var_shells': n_var_shells,
+        'var_log': var_log,
+        'var_eps': var_eps,
         'n_features_per_block': n_features,
     }
 

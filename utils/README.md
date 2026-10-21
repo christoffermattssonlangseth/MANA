@@ -14,7 +14,7 @@ Performs distance-weighted neighborhood aggregation over graph-hop rings:
 
 **Key Parameters:**
 - `n_layers` (int): Number of neighborhood layers (recommended: 3)
-- `hop_decay` (float): Block scale per hop (default 1.0; absorbed by a full-covariance GMM, only relevant for Leiden/k-means)
+- `hop_decay` (float): Block scale per hop (default 1.0; the GMM likelihood ignores it but cc.tl.Cluster's k-means init does not; mainly relevant for Leiden/k-means)
 - `distance_kernel` (str): 'exponential', 'inverse', 'gaussian', or 'none'
 - `aggregations` (str/list): 'mean', 'median', 'sum', 'max', 'var', 'std'
 - `use_rep` (str): Input representation key (e.g., 'X_scVI')
@@ -23,6 +23,8 @@ Performs distance-weighted neighborhood aggregation over graph-hop rings:
 Stores aggregated features in `adata.obsm[out_key]`
 
 **Also:** `aggregate_neighbors_shells()` (recommended). Aggregates in soft rings of physical distance (Gaussian rings at k × median edge length) instead of graph hops, keeping each ring as a separate block like CellCharter.
+
+**Ring variance:** `n_var_layers` (hops) / `n_var_shells` (shells) append the weighted variance of each ring after the mean blocks (`var_log=True` for log variance). Recommended: 3. With `distance_kernel='none'` and `n_var_layers=3` this equals `cc.gr.aggregate_neighbors(aggregations=['mean', 'var'])` up to block order.
 - `n_shells` (int): number of rings (recommended: 3)
 - `width` (float): ring half-width as a fraction of spacing (default 0.5)
 - `spacing` (float): ring spacing; auto = median Delaunay edge per sample
