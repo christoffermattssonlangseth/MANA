@@ -9,6 +9,9 @@ MANA shells+var) plus shared graph building and `cc.tl.Cluster` helpers. Add a n
 `METHODS` and the realistic synthetic and Allen benchmarks pick it up. All features must be
 computed from the embedding alone (no annotations); annotations are only used for scoring.
 `cc.tl.Cluster` is not reproducible across runs, so every benchmark uses several seeds.
+`smooth_labels` (majority vote over graph neighbours) and `consensus_labels` (Hungarian-aligned
+vote over seeds) are annotation-free post-processing steps; `realistic_synthetic.py` reports ARI
+both raw and smoothed.
 
 ## Realistic synthetic tissues (use this one)
 

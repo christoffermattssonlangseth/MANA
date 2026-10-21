@@ -51,3 +51,29 @@ def cluster(X, K, seed, threads=2):
                           trainer_params={'accelerator': 'cpu', 'enable_progress_bar': False})
         m.fit(b, use_rep='f')
         return np.asarray(m.predict(b, use_rep='f')).astype(int)
+
+
+def smooth_labels(lab, A, iters=2):
+    """Majority vote over each cell and its graph neighbours (A: spatial_connectivities), `iters` rounds.
+    Annotation-free post-processing; ties go to the lowest label."""
+    from scipy.sparse import csr_matrix, eye
+    lab = np.asarray(lab); n = len(lab); K = lab.max() + 1
+    Ahat = (A.astype(bool).astype(np.float32) + eye(n, format='csr')).tocsr()
+    for _ in range(iters):
+        onehot = csr_matrix((np.ones(n), (np.arange(n), lab)), shape=(n, K))
+        lab = np.asarray((Ahat @ onehot).argmax(1)).ravel()
+    return lab
+
+
+def consensus_labels(runs):
+    """Align each run's labels to runs[0] (Hungarian on the contingency table), then majority vote."""
+    import pandas as pd
+    from scipy.optimize import linear_sum_assignment
+    ref = runs[0]; K = max(r.max() for r in runs) + 1
+    votes = np.zeros((len(ref), K), np.float32)
+    for r in runs:
+        ct = pd.crosstab(r, ref)
+        ri, ci = linear_sum_assignment(-ct.values)
+        mp = np.arange(K); mp[ct.index[ri]] = ct.columns[ci]
+        votes[np.arange(len(r)), mp[r]] += 1
+    return votes.argmax(1)

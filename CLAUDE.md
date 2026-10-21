@@ -11,6 +11,14 @@ This document tracks the development and optimization of the MANA (Metric-Aware 
 
 This creates a continuous, distance-aware spatial context representation that better captures spatial gradients and microenvironmental transitions in spatial transcriptomics data.
 
+## 2026-10-21 (later) Label smoothing, consensus, higher K
+
+Allen, whole sections, 5 seeds (`smooth_labels`, `consensus_labels` in `benchmarks/methods.py`; post-processing is annotation-free):
+- K=20 layers / CA1-CA3-DG / regions: CellCharter 0.408 / 0.253 / 0.305; smoothed 0.491 / 0.259 / 0.339; consensus + smoothed 0.513 / 0.305 / 0.364 (best on all three). CC mean+var 0.489 / 0.129 -> smoothed 0.508 / 0.132; shells+var 0.466 / 0.134 -> 0.472 / 0.139. Smoothing gains CellCharter +0.07-0.11 layer ARI in every seed, variance features 0-0.02: on brain, ring variance mostly acts as a smoother and costs hippocampal fields.
+- K=35 does not fix hippocampus for variance features (0.14-0.16 vs CellCharter 0.24-0.26), so it is not a cluster-budget issue; thalamic nuclei improve with K (0.10 -> 0.16). CellCharter's CA ARI has seed SD 0.12 at K=20.
+- Realistic synthetic, smoothed: CellCharter 0.259, mean+var 0.311, shells 0.278, shells+var 0.323 (vs mean+var +0.012, p=0.16; unsmoothed same run +0.021, p=0.007). Here smoothing does not replace variance, since domains differ by cell-type mix.
+- Negative: hard k-means (40 types) composition rings (cortex layers 0.359, hippocampus 0.315) and PCA-50 compression of mean+var (layers 0.296, z-scored 0.357; recovers hippocampus/thalamus).
+
 ## 2026-10-21 Variance, Allen MERFISH and corrections (supersedes parts of 2026-10-20)
 
 **How CellCharter works** (`cellcharter/gr/_aggr.py`): Delaunay graph, long edges (>99th percentile) removed; hop rings are disjoint BFS shells (exactly k hops); each ring is an unweighted mean (1/|ring|); output `[self | ring1 | ring2 | ring3]`; ring importance is left to the full-covariance GMM. It also supports `aggregations=['mean', 'var']` (raw variance per ring), off by default. Like CellCharter, MANA must stay annotation-free: features come from the embedding only; annotations are for scoring.
@@ -28,7 +36,7 @@ This creates a continuous, distance-aware spatial context representation that be
 - Block scaling is not fully absorbed: `cc.tl.Cluster` initialises with k-means, which is scale-sensitive. z-scoring gave +0.11 ARI on the i.i.d. simulator but ~0 on EAE and the realistic simulator.
 - With scipy >= 1.17, `cc.gr.aggregate_neighbors` and MANA's old `M[np.ix_(idx, idx)]` crash on samples above ~46K cells (n x n index overflow). MANA now uses `_subset_square` (rows then columns); use `aggregate_neighbors_weighted(distance_kernel='none')` as a CellCharter drop-in.
 
-**Recommended now:** `aggregate_neighbors_shells(adata, n_shells=3, n_var_shells=3, use_rep='X_scVI', sample_key='sample_id')`, or for the CellCharter-equivalent `cc.gr.aggregate_neighbors(..., aggregations=['mean', 'var'])`; then `cc.tl.Cluster` with several seeds.
+**Recommended now:** `aggregate_neighbors_shells(adata, n_shells=3, n_var_shells=3, use_rep='X_scVI', sample_key='sample_id')`, or for the CellCharter-equivalent `cc.gr.aggregate_neighbors(..., aggregations=['mean', 'var'])`; then `cc.tl.Cluster` with several seeds, and consider consensus + `smooth_labels` (on Allen this makes plain CellCharter the best overall).
 
 ## 2026-10-20 Re-evaluation (supersedes Phases 1-3 conclusions below)
 

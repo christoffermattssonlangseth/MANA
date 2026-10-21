@@ -9,6 +9,8 @@ ratios (1.96 / 2.61 / 3.45 vs EAE 2.23 / 2.92 / 3.44).
 
     python realistic_synthetic.py 10 results_realistic.csv              # all methods in methods.py
     python realistic_synthetic.py 10 out.csv "CellCharter,MANA shells"   # a subset
+
+ARI_smooth scores the same labels after 2 rounds of neighbour majority vote (smooth_labels).
 """
 import os, sys, warnings
 warnings.filterwarnings('ignore')
@@ -19,7 +21,7 @@ from scipy.spatial import cKDTree
 from scipy.stats import norm
 from sklearn.metrics import adjusted_rand_score
 import synthetic_benchmark as bench
-from methods import METHODS, build_graph, cluster
+from methods import METHODS, build_graph, cluster, smooth_labels
 
 
 def sc_lesion_rim(rng):
@@ -74,9 +76,12 @@ def run_one(args):
     a = simulate(name, seed)
     build_graph(a)
     truth = a.obs['truth'].values; K = len(np.unique(truth))
-    return [dict(scenario=name, seed=seed, method=m,
-                 ARI=adjusted_rand_score(truth, cluster(METHODS[m](a, 'X_lat'), K, seed, threads=1)))
-            for m in methods]
+    rows = []
+    for m in methods:
+        lab = cluster(METHODS[m](a, 'X_lat'), K, seed, threads=1)
+        rows.append(dict(scenario=name, seed=seed, method=m, ARI=adjusted_rand_score(truth, lab),
+                         ARI_smooth=adjusted_rand_score(truth, smooth_labels(lab, a.obsp['spatial_connectivities']))))
+    return rows
 
 
 if __name__ == '__main__':
@@ -87,4 +92,5 @@ if __name__ == '__main__':
         rows = sum(p.map(run_one, [(s, i, methods) for s in SCENARIOS for i in range(n_seeds)], chunksize=1), [])
     d = pd.DataFrame(rows); d.to_csv(out, index=False)
     print(d.pivot_table(index='scenario', columns='method', values='ARI').round(3).to_string())
-    print(d.groupby('method').ARI.mean().round(3).to_string())
+    print(d.pivot_table(index='scenario', columns='method', values='ARI_smooth').round(3).to_string())
+    print(d.groupby('method')[['ARI', 'ARI_smooth']].mean().round(3).to_string())
