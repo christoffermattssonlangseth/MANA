@@ -17,6 +17,7 @@ Allen, whole sections, 5 seeds (`smooth_labels`, `consensus_labels` in `benchmar
 - K=20 layers / CA1-CA3-DG / regions: CellCharter 0.408 / 0.253 / 0.305; smoothed 0.491 / 0.259 / 0.339; consensus + smoothed 0.513 / 0.305 / 0.364 (best on all three). CC mean+var 0.489 / 0.129 -> smoothed 0.508 / 0.132; shells+var 0.466 / 0.134 -> 0.472 / 0.139. Smoothing gains CellCharter +0.07-0.11 layer ARI in every seed, variance features 0-0.02: on brain, ring variance mostly acts as a smoother and costs hippocampal fields.
 - K=35 does not fix hippocampus for variance features (0.14-0.16 vs CellCharter 0.24-0.26), so it is not a cluster-budget issue; thalamic nuclei improve with K (0.10 -> 0.16). CellCharter's CA ARI has seed SD 0.12 at K=20.
 - Realistic synthetic, smoothed: CellCharter 0.259, mean+var 0.311, shells 0.278, shells+var 0.323 (vs mean+var +0.012, p=0.16; unsmoothed same run +0.021, p=0.007). Here smoothing does not replace variance, since domains differ by cell-type mix.
+- EAE (5 sections, 5 seeds; `v_eaesmooth.py` in scratch): smoothing lowers marker eta² for all methods (K=10 CellCharter 0.172 -> 0.169, CC mean+var 0.181 -> 0.178, shells+var 0.176 -> 0.175) and does not raise stability; variance still helps at K=10. Consensus fixes CellCharter's S4_T2_2 dorsal-horn misses (0.58 -> 0.95). Seed stability ranking flipped between runs (K=10 shells+var 0.77 vs CC 0.67 earlier; now 0.70 vs 0.72): stability differences are noise. Smoothing's big Allen gain is specific to large smooth domains.
 - Negative: hard k-means (40 types) composition rings (cortex layers 0.359, hippocampus 0.315) and PCA-50 compression of mean+var (layers 0.296, z-scored 0.357; recovers hippocampus/thalamus).
 
 ## 2026-10-21 Variance, Allen MERFISH and corrections (supersedes parts of 2026-10-20)
@@ -29,7 +30,7 @@ Allen, whole sections, 5 seeds (`smooth_labels`, `consensus_labels` in `benchmar
 
 **Realistic synthetic** (`benchmarks/realistic_synthetic.py`): the old simulator draws cells i.i.d. within domains (self/ring-3 variance ratio 12x vs 3.4x in EAE). New one adds a smooth within-domain cell-state field and cell-type patches (field_amp=1, field_len=6, patch_len=3, patch_strength=0.9 match EAE). Mean ARI over 8 layouts x 10 seeds: CellCharter 0.224, CC mean+var 0.297, shells 0.260, shells+var 0.314 (vs CC mean+var +0.017, p=0.03).
 
-**EAE composition** (fixed script): R² within 30 µm CellCharter 0.554, CC mean+var 0.577, shells 0.609, shells+var 0.637 (107/107 samples better than CellCharter); hop3 control CC mean+var 0.790 best. **EAE clustering** K=10: variance raises marker eta² 0.170 -> 0.176-0.179; shells+var most seed-stable; K=20 tie.
+**EAE composition** (fixed script): R² within 30 µm CellCharter 0.554, CC mean+var 0.577, shells 0.609, shells+var 0.637 (107/107 samples better than CellCharter); hop3 control CC mean+var 0.790 best. **EAE clustering** K=10: variance raises marker eta² 0.170 -> 0.176-0.179; seed stability did not replicate (see later section); K=20 tie.
 
 **Corrections:**
 - Composition targets were misaligned in 26/107 sections (AnnData subsetting drops unused categories, shifting codes). Old R² (0.376 / 0.427) were too low; rankings unchanged. The adaptive a=0/0.5/1 composition comparison was not re-run.
